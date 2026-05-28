@@ -44,9 +44,12 @@ uint32_t resetPeriod = 250;
 device_configuration_t DEFAULT_CONFIG =
 {
   false, true, true, true, false,
-  SFDMode::STANDARD_SFD, Channel::CHANNEL_5,
-  DataRate::RATE_850KBPS, PulseFrequency::FREQ_64MHZ,
-  PreambleLength::LEN_256, PreambleCode::CODE_9
+  SFDMode::STANDARD_SFD,
+  Channel::CHANNEL_2,
+  DataRate::RATE_110KBPS,
+  PulseFrequency::FREQ_64MHZ,
+  PreambleLength::LEN_1024,
+  PreambleCode::CODE_9
 };
 
 interrupt_configuration_t DEFAULT_INTERRUPT_CONFIG = { true, true, true, false, true };

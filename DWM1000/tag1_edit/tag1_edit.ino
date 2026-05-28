@@ -250,110 +250,59 @@ void dwm1000_process()
       transmitRange();
     }
     else if (data[0] == RANGE_REPORT && expectedMsgId == RANGE_REPORT)
-{
-  Serial.println("RANGE REPORT - A0 TEST ONLY");
+    {
+      Serial.println("RANGE REPORT");
 
-  float curRange;
-  memcpy(&curRange, data + 1, 4);
+      float curRange;
+      memcpy(&curRange, data + 1, 4);
 
-  // A0 거리만 저장
-  if (curRange > 0 && curRange < 100.0)
-  {
-    distance_storage[0] = (int)(curRange * 1000.0); // m → mm
-    last_data_update_time = millis();
-  }
+      if (curRange > 0 && curRange < 100.0 && data[16] < ANCHOR_NO)
+      {
+        distance_storage[data[16]] = (int)(curRange * 1000.0);
+        last_data_update_time = millis();
+      }
 
-  // 나머지 앵커는 테스트 중이므로 0 처리
-  distance_storage[1] = 0;
-  distance_storage[2] = 0;
-  distance_storage[3] = 0;
+      other_tag_id = data[17];
+      other_tag_dist = (data[18] << 8) | data[19];
 
-  // 기존 다중 앵커 순차 측정 부분은 사용하지 않음
-  /*
-  expectedMsgId = POLL_ACK;
-  current_target_id++;
+      Serial.print(data[16]);
+      Serial.print(",");
+      Serial.print(other_tag_id);
+      Serial.print(",");
+      Serial.println(other_tag_dist);
 
-  if (current_target_id < ANCHOR_NO)
-  {
-    expectedMsgId = POLL_ACK;
-    transmitPoll();
-  }
-  else
-  {
-    transmitFinalReport();
-    current_target_id = 0;
-  }
-  */
+      expectedMsgId = POLL_ACK;
+      current_target_id++;
 
-// A0 거리만 들어있는 FINAL_REPORT를 Anchor로 전송
-transmitFinalReport();
+      if (current_target_id < ANCHOR_NO)
+      {
+        Serial.print(current_target_id);
+        Serial.println(" - NEW POLL");
 
-// 태그 시리얼 출력 제거 가능
-// Serial.print("A0 DIST ONLY: ");
-// Serial.println(distance_storage[0]);
+        expectedMsgId = POLL_ACK;
+        transmitPoll();
+      }
+      else
+      {
+        transmitFinalReport();
 
-current_target_id = 0;
-expectedMsgId = POLL_ACK;
+        Serial.println("############");
+        Serial.print(distance_storage[0]);
+        Serial.print(",");
+        Serial.print(distance_storage[1]);
+        Serial.print(",");
+        Serial.print(distance_storage[2]);
+        Serial.print(",");
+        Serial.print(distance_storage[3]);
+        Serial.println("");
 
-// 여기서 receiver()를 바로 호출하면 FINAL_REPORT 송신이 끝나기 전에
-// forceTRxOff()가 걸려 앵커가 못 받을 수 있음.
-// 수신 전환은 sentAck 처리부에서 자동으로 수행됨.
-// receiver();
-}
-//    else if (data[0] == RANGE_REPORT && expectedMsgId == RANGE_REPORT)
-//    {
-//      Serial.println("RANGE REPORT");
-//
-//      float curRange;
-//      memcpy(&curRange, data + 1, 4);
-//
-//      if (curRange > 0 && curRange < 100.0 && data[16] < ANCHOR_NO)
-//      {
-//        distance_storage[data[16]] = (int)(curRange * 1000.0);
-//        last_data_update_time = millis();
-//      }
-//
-//      other_tag_id = data[17];
-//      other_tag_dist = (data[18] << 8) | data[19];
-//
-//      Serial.print(data[16]);
-//      Serial.print(",");
-//      Serial.print(other_tag_id);
-//      Serial.print(",");
-//      Serial.println(other_tag_dist);
-//
-//      expectedMsgId = POLL_ACK;
-//      current_target_id++;
-//
-//      if (current_target_id < ANCHOR_NO)
-//      {
-//        Serial.print(current_target_id);
-//        Serial.println(" - NEW POLL");
-//
-//        expectedMsgId = POLL_ACK;
-//        transmitPoll();
-//      }
-//      else
-//      {
-//        transmitFinalReport();
-//
-//        Serial.println("############");
-//        Serial.print(distance_storage[0]);
-//        Serial.print(",");
-//        Serial.print(distance_storage[1]);
-//        Serial.print(",");
-//        Serial.print(distance_storage[2]);
-//        Serial.print(",");
-//        Serial.print(distance_storage[3]);
-//        Serial.println("");
-//
-//        current_target_id = 0;
-//      }
-//    }
-//    else
-//    {
-//      receiver();
-//    }
+        current_target_id = 0;
+      }
+    }
+    else
+    {
+      receiver();
+    }
 
     noteActivity();
   }
