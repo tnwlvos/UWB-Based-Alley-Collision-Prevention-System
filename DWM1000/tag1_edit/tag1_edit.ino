@@ -26,6 +26,7 @@ uint16_t distance_storage[ANCHOR_NO];
 int other_tag_id = 0;
 uint16_t other_tag_dist = 0;
 int current_target_id = 0;
+bool ranging_in_progress = false;
 
 volatile byte expectedMsgId = POLL_ACK;
 volatile boolean sentAck = false;
@@ -37,11 +38,11 @@ uint64_t timePollSent, timePollAckReceived, timeRangeSent;
 byte data[LEN_DATA];
 
 uint32_t lastActivity;
-uint32_t resetPeriod = 500;       // 기존 150 → 500
+uint32_t resetPeriod = 800;       // 기존 150 → 500
 uint16_t replyDelayTimeUS = 8000;
 
 uint32_t last_data_update_time = 0;
-const uint32_t HANG_TIMEOUT = 5000;   // 기존 2000 → 5000
+const uint32_t HANG_TIMEOUT = 7000;   // 기존 2000 → 5000
 
 device_configuration_t DEFAULT_CONFIG =
 {
@@ -146,6 +147,65 @@ void transmitRange()
 
 unsigned long warning_millis = 0;
 
+void resetDistanceStorage()
+{
+  for (int i = 0; i < ANCHOR_NO; i++)
+  {
+    distance_storage[i] = 0;
+  }
+}
+
+void finishRangeCycle()
+{
+  transmitFinalReport();
+
+  Serial.println("############");
+  Serial.print(distance_storage[0]);
+  Serial.print(",");
+  Serial.print(distance_storage[1]);
+  Serial.print(",");
+  Serial.print(distance_storage[2]);
+  Serial.print(",");
+  Serial.print(distance_storage[3]);
+  Serial.println("");
+
+  current_target_id = 0;
+  expectedMsgId = POLL_ACK;
+  ranging_in_progress = false;
+  last_data_update_time = millis();
+}
+
+void advanceToNextAnchor()
+{
+  expectedMsgId = POLL_ACK;
+  current_target_id++;
+
+  if (current_target_id < ANCHOR_NO)
+  {
+    Serial.print(current_target_id);
+    Serial.println(" - NEW POLL");
+
+    transmitPoll();
+    noteActivity();
+  }
+  else
+  {
+    finishRangeCycle();
+  }
+}
+
+void skipCurrentAnchor()
+{
+  if (current_target_id < ANCHOR_NO)
+  {
+    Serial.print("ANCHOR TIMEOUT : ");
+    Serial.println(current_target_id);
+    distance_storage[current_target_id] = 0;
+  }
+
+  advanceToNextAnchor();
+}
+
 void receiver()
 {
   Serial.println("RECEIVER");
@@ -164,6 +224,8 @@ void dwm1000_process()
     {
       current_target_id = 0;
       expectedMsgId = POLL_ACK;
+      ranging_in_progress = true;
+      resetDistanceStorage();
 
       DW1000Ng::forceTRxOff();
       transmitPoll();
@@ -176,6 +238,12 @@ void dwm1000_process()
     Serial.println("SEND OK");
     sentAck = false;
     receiver();
+  }
+
+  if (ranging_in_progress && !sentAck && !receivedAck && millis() - lastActivity > resetPeriod)
+  {
+    skipCurrentAnchor();
+    return;
   }
 
   if (receivedAck)
@@ -193,6 +261,8 @@ void dwm1000_process()
       {
         current_target_id = 0;
         expectedMsgId = POLL_ACK;
+        ranging_in_progress = true;
+        resetDistanceStorage();
 
         DW1000Ng::forceTRxOff();
         transmitPoll();
@@ -261,6 +331,10 @@ void dwm1000_process()
         distance_storage[data[16]] = (uint16_t)min(curRange * 1000.0, 65535.0);
         last_data_update_time = millis();
       }
+      else if (data[16] < ANCHOR_NO)
+      {
+        distance_storage[data[16]] = 0;
+      }
 
       other_tag_id = data[17];
       other_tag_dist = ((uint16_t)data[18] << 8) | data[19];
@@ -271,33 +345,7 @@ void dwm1000_process()
       Serial.print(",");
       Serial.println(other_tag_dist);
 
-      expectedMsgId = POLL_ACK;
-      current_target_id++;
-
-      if (current_target_id < ANCHOR_NO)
-      {
-        Serial.print(current_target_id);
-        Serial.println(" - NEW POLL");
-
-        expectedMsgId = POLL_ACK;
-        transmitPoll();
-      }
-      else
-      {
-        transmitFinalReport();
-
-        Serial.println("############");
-        Serial.print(distance_storage[0]);
-        Serial.print(",");
-        Serial.print(distance_storage[1]);
-        Serial.print(",");
-        Serial.print(distance_storage[2]);
-        Serial.print(",");
-        Serial.print(distance_storage[3]);
-        Serial.println("");
-
-        current_target_id = 0;
-      }
+      advanceToNextAnchor();
     }
     else
     {

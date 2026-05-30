@@ -66,6 +66,9 @@ class KalmanFilter {
   }
 
   float update(float measurement) {
+    if (measurement <= 0.0) {
+      return max(x, 0.0);
+    }
     if (x == -1.0 || x == 0.0) {
       x = measurement;
       return x;
@@ -116,31 +119,32 @@ class VehicleState {
     float centerX = A0_X;
     float centerY = A0_Y;
 
-    if (dists[0] < 2.0) {
+    boolean hasD0 = dists[0] > 0.0;
+    boolean hasD1 = dists[1] > 0.0;
+    boolean hasD2 = dists[2] > 0.0;
+    boolean hasD3 = dists[3] > 0.0;
+
+    if (hasD0 && dists[0] < 2.0) {
       road = "CENTER";
       pos.set(centerX, centerY);
       hasEnteredCenter = true;
     } else {
-      float[] sortedDists = {dists[0], dists[1], dists[2], dists[3]};
-      Arrays.sort(sortedDists);
-      float minDist1 = sortedDists[0];
-      float minDist2 = sortedDists[1];
-      float avgDist = (minDist1 + minDist2) / 2.0;
-
-      if ((dists[0] == minDist1 || dists[0] == minDist2) && (dists[3] == minDist1 || dists[3] == minDist2)) {
+      if (hasD0 && hasD3) {
         road = "A0-A3 ROAD";
         pos.set(projectA0A3Road(dists[0], dists[3]));
-      } else if ((dists[0] == minDist1 || dists[0] == minDist2) && (dists[1] == minDist1 || dists[1] == minDist2)) {
+      } else if (hasD0 && hasD1) {
         road = "A0-A1 ROAD";
         pos.set(projectA0A1Road(dists[0], dists[1]));
-      } else if ((dists[2] == minDist1 || dists[2] == minDist2) && (dists[3] == minDist1 || dists[3] == minDist2)) {
+      } else if (hasD2 && hasD3) {
+        float avgDist = (dists[2] + dists[3]) / 2.0;
         road = "A2-A3 ROAD";
         pos.set(A0_X - constrain(avgDist, 0, A0_A3_ROAD_LEN_M) * MAP_SCALE, A3_Y);
-      } else if ((dists[1] == minDist1 || dists[1] == minDist2) && (dists[2] == minDist1 || dists[2] == minDist2)) {
+      } else if (hasD1 && hasD2) {
+        float avgDist = (dists[1] + dists[2]) / 2.0;
         road = "A1-A2 ROAD";
         pos.set(A1_X, A0_Y - constrain(avgDist, 0, A0_A1_ROAD_LEN_M) * MAP_SCALE);
       } else {
-        road = "TRANSITION";
+        road = "PARTIAL";
       }
     }
 

@@ -19,8 +19,13 @@ unsigned long prev_succeed_millis;
 uint16_t distance_storage[ANCHOR_NO];
 uint16_t all_tags_dist[MAX_TAG_ID];
 
+int heard_tag_list[10];
+unsigned long heard_tag_millis[10];
+unsigned long heard_tag_report_millis[10];
+
 /* 태그별 출력 안정화를 위한 변수 */
 uint32_t last_tag_print[MAX_TAG_ID];
+const uint32_t HEARD_TAG_REPORT_INTERVAL = 1000;
 const uint32_t PRINT_INTERVAL = 100; // 출력 간격 (0.2초)
 
 #define POLL 0
@@ -29,6 +34,10 @@ const uint32_t PRINT_INTERVAL = 100; // 출력 간격 (0.2초)
 #define RANGE_REPORT 3
 #define BEACON 4
 #define FINAL_REPORT 5
+#define WARNING 6
+#define TAG_REQUEST 7
+#define TAG_RESPONSE 8
+#define ANCHOR_TAG_REPORT 9
 
 volatile byte expectedMsgId = POLL;
 volatile boolean sentAck = false;
@@ -95,8 +104,9 @@ void transmitRangeReport(float curRange, byte targetTagId)
   data[16] = MY_ID;
   byte relayTagId = data[17];//(targetTagId == 1) ? 2 : 1;
   //  data[17] = relayTagId;
-  data[18] = all_tags_dist[relayTagId] >> 8;
-  data[19] = all_tags_dist[relayTagId] & 0xFF;
+  uint16_t relayDist = relayTagId < MAX_TAG_ID ? all_tags_dist[relayTagId] : 0;
+  data[18] = relayDist >> 8;
+  data[19] = relayDist & 0xFF;
 
   DW1000Ng::forceTRxOff();
   DW1000Ng::setTransmitData(data, LEN_DATA);
@@ -108,6 +118,13 @@ void setup()
   pinMode(2, OUTPUT);
   digitalWrite(2, HIGH);
   Serial.begin(115200);
+
+  for (int i = 0; i < 10; i++)
+  {
+    heard_tag_list[i] = -1;
+    heard_tag_millis[i] = 0;
+    heard_tag_report_millis[i] = 0;
+  }
 
   Serial.print("ANCHOR START - ID: ");
   Serial.println(MY_ID);
@@ -129,9 +146,53 @@ void send_beacon(int id)
   Serial.println("BEACON");
   data[0] = BEACON;
   data[1] = id;
+  data[16] = MY_ID;
+  data[17] = id;
   DW1000Ng::forceTRxOff();
   DW1000Ng::setTransmitData(data, LEN_DATA);
   DW1000Ng::startTransmit();
+}
+
+void transmitAnchorTagReport(byte tagId)
+{
+  data[0] = ANCHOR_TAG_REPORT;
+  data[1] = MY_ID;
+  data[16] = 0;
+  data[17] = tagId;
+
+  DW1000Ng::forceTRxOff();
+  DW1000Ng::setTransmitData(data, LEN_DATA);
+  DW1000Ng::startTransmit();
+}
+
+bool update_heard_tag_status(int tag_id)
+{
+  for (int i = 0; i < 10; i++)
+  {
+    if (heard_tag_list[i] == tag_id)
+    {
+      heard_tag_millis[i] = millis();
+      if (millis() - heard_tag_report_millis[i] >= HEARD_TAG_REPORT_INTERVAL)
+      {
+        heard_tag_report_millis[i] = millis();
+        return true;
+      }
+      return false;
+    }
+  }
+
+  for (int i = 0; i < 10; i++)
+  {
+    if (heard_tag_list[i] == -1)
+    {
+      heard_tag_list[i] = tag_id;
+      heard_tag_millis[i] = millis();
+      heard_tag_report_millis[i] = millis();
+      return true;
+    }
+  }
+
+  return false;
 }
 
 int id = 1;
@@ -187,6 +248,24 @@ void loop()
     byte msgId = data[0];
     byte current_tag_id = data[17];
 
+    if (msgId == TAG_RESPONSE)
+    {
+      if (update_heard_tag_status(current_tag_id))
+      {
+        Serial.print("HEARD TAG FROM A");
+        Serial.print(MY_ID);
+        Serial.print(" : ");
+        Serial.println(current_tag_id);
+        transmitAnchorTagReport(current_tag_id);
+        noteActivity();
+        return;
+      }
+
+      receiver();
+      noteActivity();
+      return;
+    }
+
     if (msgId == POLL)
     {
       Serial.println("RECEIVED POLL");
@@ -211,7 +290,10 @@ void loop()
         Serial.print(i == ANCHOR_NO - 1 ? "" : ",");
       }
       Serial.println();
-      last_tag_print[current_tag_id] = millis();
+      if (current_tag_id < MAX_TAG_ID)
+      {
+        last_tag_print[current_tag_id] = millis();
+      }
 
       receiver();
     }

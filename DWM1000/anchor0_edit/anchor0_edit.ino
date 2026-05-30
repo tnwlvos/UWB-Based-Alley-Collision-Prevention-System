@@ -5,9 +5,16 @@
 
 int active_tag_count = 0;
 int active_tag_list[10];
+int active_tag_heard_anchor[10];
 
 int tag_list[10];
 unsigned long tag_millis[10];
+int tag_heard_anchor[10];
+int prev_active_tag_count = -1;
+int prev_active_tag_list[10];
+int prev_active_tag_heard_anchor[10];
+int last_reported_tag_id_by_anchor[4];
+unsigned long last_anchor_report_print_millis[4];
 
 int id_index = 0;
 unsigned long prev_send_beacon_millis;
@@ -31,6 +38,8 @@ uint16_t all_tags_dist[MAX_TAG_ID];
 
 uint32_t last_tag_print[MAX_TAG_ID];
 const uint32_t PRINT_INTERVAL = 100;
+const uint32_t ANCHOR_REPORT_PRINT_INTERVAL = 1000;
+const uint32_t TAG_IDLE_TIMEOUT = 6000;
 
 #define POLL 0
 #define POLL_ACK 1
@@ -41,6 +50,9 @@ const uint32_t PRINT_INTERVAL = 100;
 #define WARNING 6
 #define TAG_REQUEST 7
 #define TAG_RESPONSE 8
+#define ANCHOR_TAG_REPORT 9
+#define BEACON_DELEGATE 10
+#define DELEGATED_FINAL_REPORT 11
 
 volatile byte expectedMsgId = POLL;
 volatile boolean sentAck = false;
@@ -118,9 +130,10 @@ void transmitRangeReport(float curRange, byte targetTagId)
 
   data[16] = MY_ID;
   byte relayTagId = data[17];
+  uint16_t relayDist = relayTagId < MAX_TAG_ID ? all_tags_dist[relayTagId] : 0;
 
-  data[18] = all_tags_dist[relayTagId] >> 8;
-  data[19] = all_tags_dist[relayTagId] & 0xFF;
+  data[18] = relayDist >> 8;
+  data[19] = relayDist & 0xFF;
 
   DW1000Ng::forceTRxOff();
   DW1000Ng::setTransmitData(data, LEN_DATA);
@@ -138,7 +151,17 @@ void setup()
   {
     tag_list[i] = -1;
     tag_millis[i] = 0;
+    tag_heard_anchor[i] = -1;
     active_tag_list[i] = -1;
+    active_tag_heard_anchor[i] = -1;
+    prev_active_tag_list[i] = -1;
+    prev_active_tag_heard_anchor[i] = -1;
+  }
+
+  for (int i = 0; i < ANCHOR_NO; i++)
+  {
+    last_reported_tag_id_by_anchor[i] = -1;
+    last_anchor_report_print_millis[i] = 0;
   }
 
   DW1000Ng::initialize(PIN_SS, PIN_IRQ, PIN_RST);
@@ -158,6 +181,25 @@ void send_beacon(int id)
 {
   data[0] = BEACON;
   data[1] = id;
+  data[16] = MY_ID;
+  data[17] = id;
+
+  DW1000Ng::forceTRxOff();
+  DW1000Ng::setTransmitData(data, LEN_DATA);
+  DW1000Ng::startTransmit();
+}
+
+void send_beacon_delegate(int delegate_anchor_id, int tag_id)
+{
+  Serial.print("DELEGATE TAG ");
+  Serial.print(tag_id);
+  Serial.print(" TO A");
+  Serial.println(delegate_anchor_id);
+
+  data[0] = BEACON_DELEGATE;
+  data[1] = tag_id;
+  data[16] = delegate_anchor_id;
+  data[17] = tag_id;
 
   DW1000Ng::forceTRxOff();
   DW1000Ng::setTransmitData(data, LEN_DATA);
@@ -167,6 +209,8 @@ void send_beacon(int id)
 void send_tag_request()
 {
   data[0] = TAG_REQUEST;
+  data[16] = MY_ID;
+  data[17] = 0;
 
   DW1000Ng::forceTRxOff();
   DW1000Ng::setTransmitData(data, LEN_DATA);
@@ -179,9 +223,10 @@ void remove_idle_tag_list()
 {
   for (int i = 0; i < 10; i++)
   {
-    if ((millis() - tag_millis[i]) > 3000)   // 기존 500 → 1500
+    if ((millis() - tag_millis[i]) > TAG_IDLE_TIMEOUT)
     {
       tag_list[i] = -1;
+      tag_heard_anchor[i] = -1;
     }
   }
 }
@@ -195,30 +240,77 @@ void update_active_tag_list()
     if (tag_list[i] != -1)
     {
       active_tag_list[tag_index] = tag_list[i];
+      active_tag_heard_anchor[tag_index] = tag_heard_anchor[i];
       tag_index++;
     }
   }
 
   active_tag_count = tag_index;
 
-  Serial.print("TAG LIST : ");
-  for (int i = 0; i < active_tag_count; i++)
+  bool changed = active_tag_count != prev_active_tag_count;
+
+  for (int i = 0; i < active_tag_count && !changed; i++)
   {
-    Serial.print(active_tag_list[i]);
-    Serial.print(",");
+    if (active_tag_list[i] != prev_active_tag_list[i])
+    {
+      changed = true;
+    }
+    if (active_tag_heard_anchor[i] != prev_active_tag_heard_anchor[i])
+    {
+      changed = true;
+    }
   }
-  Serial.println("");
+
+  if (changed)
+  {
+    Serial.print("TAG LIST : ");
+    for (int i = 0; i < active_tag_count; i++)
+    {
+      Serial.print(active_tag_list[i]);
+      Serial.print("(A");
+      Serial.print(active_tag_heard_anchor[i]);
+      Serial.print(")");
+      Serial.print(",");
+    }
+    Serial.println("");
+
+    prev_active_tag_count = active_tag_count;
+    for (int i = 0; i < 10; i++)
+    {
+      prev_active_tag_list[i] = active_tag_list[i];
+      prev_active_tag_heard_anchor[i] = active_tag_heard_anchor[i];
+    }
+  }
 }
 
-bool update_tag_status(int tag_id)
+int heard_anchor_priority(int heard_anchor_id)
+{
+  if (heard_anchor_id == 0) return 4;
+  if (heard_anchor_id == 2) return 3;
+  if (heard_anchor_id == 3) return 2;
+  if (heard_anchor_id == 1) return 1;
+  return 0;
+}
+
+void update_tag_heard_anchor(int slot, int heard_anchor_id)
+{
+  if (tag_heard_anchor[slot] == -1 ||
+      heard_anchor_priority(heard_anchor_id) > heard_anchor_priority(tag_heard_anchor[slot]))
+  {
+    tag_heard_anchor[slot] = heard_anchor_id;
+  }
+}
+
+bool update_tag_status(int tag_id, int heard_anchor_id)
 {
   bool flag = false;
 
   for (int i = 0; i < 10; i++)
   {
-    if (tag_list[i] == data[17])
+    if (tag_list[i] == tag_id)
     {
       tag_millis[i] = millis();
+      update_tag_heard_anchor(i, heard_anchor_id);
       flag = true;
     }
   }
@@ -231,8 +323,9 @@ bool update_tag_status(int tag_id)
     {
       if (tag_list[j] == -1)
       {
-        tag_list[j] = data[17];
+        tag_list[j] = tag_id;
         tag_millis[j] = millis();
+        tag_heard_anchor[j] = heard_anchor_id;
         flag2 = true;
         break;
       }
@@ -245,6 +338,24 @@ bool update_tag_status(int tag_id)
   }
 
   return true;
+}
+
+bool should_print_anchor_tag_report(byte reporter_anchor_id, int tag_id)
+{
+  if (reporter_anchor_id >= ANCHOR_NO)
+  {
+    return true;
+  }
+
+  if (last_reported_tag_id_by_anchor[reporter_anchor_id] != tag_id ||
+      millis() - last_anchor_report_print_millis[reporter_anchor_id] >= ANCHOR_REPORT_PRINT_INTERVAL)
+  {
+    last_reported_tag_id_by_anchor[reporter_anchor_id] = tag_id;
+    last_anchor_report_print_millis[reporter_anchor_id] = millis();
+    return true;
+  }
+
+  return false;
 }
 
 void loop()
@@ -288,7 +399,14 @@ void loop()
       }
       else
       {
-        send_beacon(active_tag_list[id_index]);
+        if (active_tag_heard_anchor[id_index] != 2)
+        {
+          send_beacon(active_tag_list[id_index]);
+        }
+        else
+        {
+          send_beacon_delegate(active_tag_heard_anchor[id_index], active_tag_list[id_index]);
+        }
       }
 
       id_index++;
@@ -324,13 +442,33 @@ void loop()
     byte msgId = data[0];
     byte current_tag_id = data[17];
 
+    if (msgId == ANCHOR_TAG_REPORT)
+    {
+      byte reporter_anchor_id = data[1];
+      update_tag_status(current_tag_id, reporter_anchor_id);
+
+      if (should_print_anchor_tag_report(reporter_anchor_id, current_tag_id))
+      {
+        Serial.print("ANCHOR TAG REPORT FROM A");
+        Serial.print(reporter_anchor_id);
+        Serial.print(" : ");
+        Serial.println(current_tag_id);
+      }
+
+      receiver();
+      prev_succeed_millis = millis();
+      noteActivity();
+      return;
+    }
+
     if (millis() < tag_id_request_millis + TAG_RESPONSE_DELAY)
     {
       prev_send_beacon_millis = millis();
 
       if (msgId == TAG_RESPONSE)
       {
-        update_tag_status(data[17]);
+        update_tag_status(data[17], MY_ID);
+        prev_succeed_millis = millis();
         receiver();
       }
 
@@ -339,7 +477,8 @@ void loop()
 
     if (msgId == POLL)
     {
-      update_tag_status(data[17]);
+      update_tag_status(data[17], MY_ID);
+      prev_succeed_millis = millis();
 
       for (int i = 0; i < ANCHOR_NO; i++)
       {
@@ -347,9 +486,10 @@ void loop()
       }
     }
 
-    if (msgId == FINAL_REPORT)
+    if (msgId == FINAL_REPORT || msgId == DELEGATED_FINAL_REPORT)
     {
-      update_tag_status(data[17]);
+      update_tag_status(data[17], msgId == DELEGATED_FINAL_REPORT ? data[15] : MY_ID);
+      prev_succeed_millis = millis();
 
       for (int i = 0; i < ANCHOR_NO; i++)
       {
@@ -367,7 +507,10 @@ void loop()
       }
 
       Serial.println();
-      last_tag_print[current_tag_id] = millis();
+      if (current_tag_id < MAX_TAG_ID)
+      {
+        last_tag_print[current_tag_id] = millis();
+      }
 
       receiver();
     }
@@ -387,7 +530,7 @@ void loop()
     }
     else if (msgId == RANGE)
     {
-      update_tag_status(data[17]);
+      update_tag_status(data[17], MY_ID);
 
       trr = DW1000Ng::getReceiveTimestamp();
       expectedMsgId = POLL;
