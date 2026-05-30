@@ -26,8 +26,8 @@ unsigned long tag_id_request_millis;
 #include <DW1000NgRanging.hpp>
 
 unsigned long prev_succeed_millis;
-int16_t distance_storage[ANCHOR_NO];
-int16_t all_tags_dist[MAX_TAG_ID];
+uint16_t distance_storage[ANCHOR_NO];
+uint16_t all_tags_dist[MAX_TAG_ID];
 
 uint32_t last_tag_print[MAX_TAG_ID];
 const uint32_t PRINT_INTERVAL = 100;
@@ -343,7 +343,7 @@ void loop()
 
       for (int i = 0; i < ANCHOR_NO; i++)
       {
-        distance_storage[i] = (data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
+        distance_storage[i] = ((uint16_t)data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
       }
     }
 
@@ -353,7 +353,7 @@ void loop()
 
       for (int i = 0; i < ANCHOR_NO; i++)
       {
-        distance_storage[i] = (data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
+        distance_storage[i] = ((uint16_t)data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
       }
 
       Serial.print("T");

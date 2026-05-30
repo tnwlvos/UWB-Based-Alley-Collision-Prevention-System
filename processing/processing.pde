@@ -22,6 +22,23 @@ int alarmTimer = 0;
 
 float SPEED_LIMIT = 3.0;
 
+PImage mapImage;
+
+final float MAP_SCALE = 14.0;        // pixels per meter for the demo map
+final float A0_A1_WIDTH_M = 6.85;    // A0-A1 road width
+final float A0_A3_WIDTH_M = 7.73;    // A0-A3 road width
+final float A0_A1_ROAD_LEN_M = 15.1; // road length from A0-A1 anchor line
+final float A0_A3_ROAD_LEN_M = 38.0; // road length from A0-A3 anchor line
+
+final float A0_X = 620;
+final float A0_Y = 360;
+final float A1_X = A0_X + A0_A1_WIDTH_M * MAP_SCALE;
+final float A1_Y = A0_Y;
+final float A3_X = A0_X;
+final float A3_Y = A0_Y + A0_A3_WIDTH_M * MAP_SCALE;
+final float A2_X = A1_X;
+final float A2_Y = A3_Y;
+
 /* 시리얼 연결 관련 변수 */
 String[] portList;
 int selectedPortIndex = -1;
@@ -96,10 +113,10 @@ class VehicleState {
 
     prevPos.set(pos.x, pos.y);
 
-    float centerX = 400;
-    float centerY = 400;
+    float centerX = A0_X;
+    float centerY = A0_Y;
 
-    if (dists[0] < 2.0 && dists[1] < 2.0 && dists[2] < 2.0 && dists[3] < 2.0) {
+    if (dists[0] < 2.0) {
       road = "CENTER";
       pos.set(centerX, centerY);
       hasEnteredCenter = true;
@@ -110,25 +127,25 @@ class VehicleState {
       float minDist2 = sortedDists[1];
       float avgDist = (minDist1 + minDist2) / 2.0;
 
-      if ((dists[0] == minDist1 || dists[0] == minDist2) && (dists[1] == minDist1 || dists[1] == minDist2)) {
-        road = "NORTH ROAD";
-        pos.set(centerX, centerY - (avgDist * 100));
+      if ((dists[0] == minDist1 || dists[0] == minDist2) && (dists[3] == minDist1 || dists[3] == minDist2)) {
+        road = "A0-A3 ROAD";
+        pos.set(projectA0A3Road(dists[0], dists[3]));
+      } else if ((dists[0] == minDist1 || dists[0] == minDist2) && (dists[1] == minDist1 || dists[1] == minDist2)) {
+        road = "A0-A1 ROAD";
+        pos.set(projectA0A1Road(dists[0], dists[1]));
       } else if ((dists[2] == minDist1 || dists[2] == minDist2) && (dists[3] == minDist1 || dists[3] == minDist2)) {
-        road = "SOUTH ROAD";
-        pos.set(centerX, centerY + (avgDist * 100));
-      } else if ((dists[0] == minDist1 || dists[0] == minDist2) && (dists[3] == minDist1 || dists[3] == minDist2)) {
-        road = "WEST ROAD";
-        pos.set(centerX - (avgDist * 100), centerY);
+        road = "A2-A3 ROAD";
+        pos.set(A0_X - constrain(avgDist, 0, A0_A3_ROAD_LEN_M) * MAP_SCALE, A3_Y);
       } else if ((dists[1] == minDist1 || dists[1] == minDist2) && (dists[2] == minDist1 || dists[2] == minDist2)) {
-        road = "EAST ROAD";
-        pos.set(centerX + (avgDist * 100), centerY);
+        road = "A1-A2 ROAD";
+        pos.set(A1_X, A0_Y - constrain(avgDist, 0, A0_A1_ROAD_LEN_M) * MAP_SCALE);
       } else {
         road = "TRANSITION";
       }
     }
 
     if (dt > 0) {
-      float distanceMoved = dist(pos.x, pos.y, prevPos.x, prevPos.y) / 100.0;
+      float distanceMoved = dist(pos.x, pos.y, prevPos.x, prevPos.y) / MAP_SCALE;
       float instantSpeed = (distanceMoved / dt) * 3.6;
       speedHistory.add(instantSpeed);
       if (speedHistory.size() > maxHistory) speedHistory.remove(0);
@@ -137,10 +154,30 @@ class VehicleState {
       speed = sum / speedHistory.size();
     }
 
-    float curD = (dists[0] + dists[1] + dists[2] + dists[3]) / 4.0;
-    float preD = (dist(prevPos.x, prevPos.y, centerX, centerY)) / 100.0;
+    float curD = dist(pos.x, pos.y, centerX, centerY) / MAP_SCALE;
+    float preD = (dist(prevPos.x, prevPos.y, centerX, centerY)) / MAP_SCALE;
     approaching = (curD < preD + 0.05);
   }
+}
+
+PVector projectA0A3Road(float dA0, float dA3) {
+  float lateralFromA0 = (sq(dA0) - sq(dA3) + sq(A0_A3_WIDTH_M)) / (2.0 * A0_A3_WIDTH_M);
+  lateralFromA0 = constrain(lateralFromA0, 0, A0_A3_WIDTH_M);
+
+  float along = sqrt(max(0, sq(dA0) - sq(lateralFromA0)));
+  along = constrain(along, 0, A0_A3_ROAD_LEN_M);
+
+  return new PVector(A0_X - along * MAP_SCALE, A0_Y + lateralFromA0 * MAP_SCALE);
+}
+
+PVector projectA0A1Road(float dA0, float dA1) {
+  float lateralFromA0 = (sq(dA0) - sq(dA1) + sq(A0_A1_WIDTH_M)) / (2.0 * A0_A1_WIDTH_M);
+  lateralFromA0 = constrain(lateralFromA0, 0, A0_A1_WIDTH_M);
+
+  float along = sqrt(max(0, sq(dA0) - sq(lateralFromA0)));
+  along = constrain(along, 0, A0_A1_ROAD_LEN_M);
+
+  return new PVector(A0_X + lateralFromA0 * MAP_SCALE, A0_Y - along * MAP_SCALE);
 }
 
 HashMap<String, VehicleState> vehicleMap = new HashMap<String, VehicleState>();
@@ -148,6 +185,7 @@ HashMap<String, VehicleState> vehicleMap = new HashMap<String, VehicleState>();
 void setup() {
   size(1000, 950);
   portList = Serial.list();
+  mapImage = loadImage("map.png");
 
   sine = new SinOsc(this);
   sine.freq(880);
@@ -440,11 +478,10 @@ void drawVehicle(float x, float y, float spd, String id, color c) {
 
 void drawWarning(String road, String id, float spd, int order)
 {
-  float lx = 400 - 200, ly = 400;
-  if (road.contains("NORTH")) ly = 180;
-  else if (road.contains("SOUTH")) ly = 800 - 180;
-  else if (road.contains("WEST")) lx = 180 - 200;
-  else if (road.contains("EAST")) lx = 800 - 180 - 200;
+  float lx = A0_X - 200;
+  float ly = A0_Y;
+  if (road.contains("A0-A1") || road.contains("A1-A2")) ly = A0_Y - 180;
+  else if (road.contains("A0-A3") || road.contains("A2-A3")) lx = A0_X - 420 - 200;
 
   ly += (order * 65);
 
@@ -476,61 +513,57 @@ void handleBuzzer(boolean active) {
   }
 }
 void drawStaticRoads() {
+  if (mapImage != null) {
+    tint(255, 55);
+    image(mapImage, 40, 90, 720, 405);
+    noTint();
+  }
+
   noStroke();
-  fill(25, 30, 45);
-  rectMode(CENTER);
+  rectMode(CORNER);
 
-  // 실제 앵커 간 거리 기준
-  // A0-A1 = 919cm = 9.19m
-  // A0-A3 = 1740cm = 17.40m
-  // 화면 스케일: 1m = 40px
-  float SCALE = 40.0;
+  fill(25, 30, 45, 230);
+  float a0a3RoadX = A0_X - A0_A3_ROAD_LEN_M * MAP_SCALE;
+  float a0a3RoadY = A0_Y;
+  float a0a3RoadW = A0_A3_ROAD_LEN_M * MAP_SCALE;
+  float a0a3RoadH = A0_A3_WIDTH_M * MAP_SCALE;
+  rect(a0a3RoadX, a0a3RoadY, a0a3RoadW, a0a3RoadH, 8);
 
-  float centerX = 400;
-  float centerY = 400;
-
-  float mapW = 9.19 * SCALE;   // 약 367.6px
-  float mapH = 17.40 * SCALE;  // 약 696px
-
-  // 도로 두께
-  float roadThickness = 140;
-
-  // 가로 도로, 세로 도로
-  rect(centerX, centerY, mapW + 200, roadThickness);
-  rect(centerX, centerY, roadThickness, mapH + 100);
+  float a0a1RoadX = A0_X;
+  float a0a1RoadY = A0_Y - A0_A1_ROAD_LEN_M * MAP_SCALE;
+  float a0a1RoadW = A0_A1_WIDTH_M * MAP_SCALE;
+  float a0a1RoadH = A0_A1_ROAD_LEN_M * MAP_SCALE;
+  rect(a0a1RoadX, a0a1RoadY, a0a1RoadW, a0a1RoadH, 8);
 
   stroke(50, 70, 100);
   strokeWeight(2);
+  line(a0a3RoadX, A0_Y + a0a3RoadH / 2, A0_X, A0_Y + a0a3RoadH / 2);
+  line(A0_X + a0a1RoadW / 2, a0a1RoadY, A0_X + a0a1RoadW / 2, A0_Y);
 
-  // 도로 중앙선
-  line(centerX - (mapW + 200)/2, centerY, centerX + (mapW + 200)/2, centerY);
-  line(centerX, centerY - (mapH + 100)/2, centerX, centerY + (mapH + 100)/2);
+  drawAnchor(0, A0_X, A0_Y);
+  drawAnchor(1, A1_X, A1_Y);
+  drawAnchor(2, A2_X, A2_Y);
+  drawAnchor(3, A3_X, A3_Y);
 
+  fill(180, 210, 255);
+  textAlign(LEFT, TOP);
+  textSize(12);
+  text("A0-A3 width: " + nf(A0_A3_WIDTH_M, 0, 2) + "m / road: " + nf(A0_A3_ROAD_LEN_M, 0, 1) + "m", 20, 815);
+  text("A0-A1 width: " + nf(A0_A1_WIDTH_M, 0, 2) + "m / road: " + nf(A0_A1_ROAD_LEN_M, 0, 1) + "m", 20, 832);
+}
+
+void drawAnchor(int id, float x, float y) {
+  noStroke();
+  fill(255, 200, 0, 55);
+  ellipse(x, y, 35, 35);
+  fill(255, 200, 0);
+  ellipse(x, y, 24, 24);
+  fill(0);
   textAlign(CENTER, CENTER);
   textSize(12);
-
-  // 앵커 좌표
-  float[][] anchors = {
-    {centerX - mapW/2, centerY - mapH/2}, // A0
-    {centerX + mapW/2, centerY - mapH/2}, // A1
-    {centerX + mapW/2, centerY + mapH/2}, // A2
-    {centerX - mapW/2, centerY + mapH/2}  // A3
-  };
-
-  for (int i = 0; i < 4; i++) {
-    noStroke();
-    fill(255, 200, 0, 50);
-    ellipse(anchors[i][0], anchors[i][1], 35, 35);
-
-    fill(255, 200, 0);
-    ellipse(anchors[i][0], anchors[i][1], 24, 24);
-
-    fill(0);
-    text(i, anchors[i][0], anchors[i][1]);
-  }
-
-  rectMode(CORNER);
+  text(id, x, y);
 }
+
 //void drawStaticRoads() {
 //  noStroke();
 //  fill(25, 30, 45);

@@ -22,9 +22,9 @@
 
 #define ANCHOR_NO 4
 
-int distance_storage[ANCHOR_NO];
+uint16_t distance_storage[ANCHOR_NO];
 int other_tag_id = 0;
-int other_tag_dist = 0;
+uint16_t other_tag_dist = 0;
 int current_target_id = 0;
 
 volatile byte expectedMsgId = POLL_ACK;
@@ -258,12 +258,12 @@ void dwm1000_process()
 
       if (curRange > 0 && curRange < 100.0 && data[16] < ANCHOR_NO)
       {
-        distance_storage[data[16]] = (int)(curRange * 1000.0);
+        distance_storage[data[16]] = (uint16_t)min(curRange * 1000.0, 65535.0);
         last_data_update_time = millis();
       }
 
       other_tag_id = data[17];
-      other_tag_dist = (data[18] << 8) | data[19];
+      other_tag_dist = ((uint16_t)data[18] << 8) | data[19];
 
       Serial.print(data[16]);
       Serial.print(",");

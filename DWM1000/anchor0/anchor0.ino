@@ -29,8 +29,8 @@ unsigned long tag_id_request_millis; // 태그들이게 ID요청한 시각
 #include <DW1000NgRanging.hpp>
 
 unsigned long prev_succeed_millis;
-int16_t distance_storage[ANCHOR_NO];
-int16_t all_tags_dist[MAX_TAG_ID];
+uint16_t distance_storage[ANCHOR_NO];
+uint16_t all_tags_dist[MAX_TAG_ID];
 
 /* 태그별 출력 안정화를 위한 변수 */
 uint32_t last_tag_print[MAX_TAG_ID];
@@ -363,7 +363,7 @@ void loop()
       // Serial.println("RECEIVED POLL");
       for (int i = 0; i < ANCHOR_NO; i++)
       {
-        distance_storage[i] = (data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
+        distance_storage[i] = ((uint16_t)data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
       }
       
     }
@@ -374,7 +374,7 @@ void loop()
 
       for (int i = 0; i < ANCHOR_NO; i++)
       {
-        distance_storage[i] = (data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
+        distance_storage[i] = ((uint16_t)data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
       }
 
       Serial.print("T"); Serial.print(current_tag_id); Serial.print(":");
@@ -423,7 +423,7 @@ void loop()
       if (dist > 0 && dist < 100.0)
       {
         /*
-                int16_t curDistInt = (int16_t)(dist * 1000.0);
+                uint16_t curDistInt = (uint16_t)min(dist * 1000.0, 65535.0);
                 if (current_tag_id < MAX_TAG_ID) all_tags_dist[current_tag_id] = curDistInt;
 
                 // 태그별 출력 간격 제어 로직
