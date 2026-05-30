@@ -22,8 +22,6 @@ int alarmTimer = 0;
 
 float SPEED_LIMIT = 3.0;
 
-PImage mapImage;
-
 final float MAP_SCALE = 14.0;        // pixels per meter for the demo map
 final float A0_A1_WIDTH_M = 6.85;    // A0-A1 road width
 final float A0_A3_WIDTH_M = 7.73;    // A0-A3 road width
@@ -92,6 +90,7 @@ class VehicleState {
   int maxHistory = 1;
   boolean approaching = false;
   String road = "None";
+  String lastRoad = "A0-A3 ROAD";
   int lastTime;
   boolean hasEnteredCenter = false;
   int displayOrder = 0;
@@ -119,10 +118,10 @@ class VehicleState {
     float centerX = A0_X;
     float centerY = A0_Y;
 
-    boolean hasD0 = dists[0] > 0.0;
-    boolean hasD1 = dists[1] > 0.0;
-    boolean hasD2 = dists[2] > 0.0;
-    boolean hasD3 = dists[3] > 0.0;
+    boolean hasD0 = d1 > 0.0;
+    boolean hasD1 = d2 > 0.0;
+    boolean hasD2 = d3 > 0.0;
+    boolean hasD3 = d4 > 0.0;
 
     if (hasD0 && dists[0] < 2.0) {
       road = "CENTER";
@@ -143,9 +142,25 @@ class VehicleState {
         float avgDist = (dists[1] + dists[2]) / 2.0;
         road = "A1-A2 ROAD";
         pos.set(A1_X, A0_Y - constrain(avgDist, 0, A0_A1_ROAD_LEN_M) * MAP_SCALE);
+      } else if (hasD0) {
+        road = lastRoad;
+        pos.set(projectSingleAnchorRoad(0, dists[0], road));
+      } else if (hasD3) {
+        road = "A0-A3 ROAD";
+        pos.set(projectSingleAnchorRoad(3, dists[3], road));
+      } else if (hasD1) {
+        road = "A0-A1 ROAD";
+        pos.set(projectSingleAnchorRoad(1, dists[1], road));
+      } else if (hasD2) {
+        road = lastRoad.equals("A0-A1 ROAD") ? "A0-A1 ROAD" : "A0-A3 ROAD";
+        pos.set(projectSingleAnchorRoad(2, dists[2], road));
       } else {
         road = "PARTIAL";
       }
+    }
+
+    if (!road.equals("PARTIAL") && !road.equals("CENTER")) {
+      lastRoad = road;
     }
 
     if (dt > 0) {
@@ -184,12 +199,33 @@ PVector projectA0A1Road(float dA0, float dA1) {
   return new PVector(A0_X + lateralFromA0 * MAP_SCALE, A0_Y - along * MAP_SCALE);
 }
 
+PVector projectSingleAnchorRoad(int anchorId, float distanceM, String road) {
+  float along = max(0, distanceM);
+
+  if (road.equals("A0-A1 ROAD")) {
+    if (anchorId == 2) {
+      return new PVector(A1_X, A2_Y - constrain(along, 0, A0_A1_ROAD_LEN_M) * MAP_SCALE);
+    }
+    if (anchorId == 1) {
+      return new PVector(A1_X, A1_Y - constrain(along, 0, A0_A1_ROAD_LEN_M) * MAP_SCALE);
+    }
+    return new PVector(A0_X, A0_Y - constrain(along, 0, A0_A1_ROAD_LEN_M) * MAP_SCALE);
+  }
+
+  if (anchorId == 2) {
+    return new PVector(A2_X - constrain(along, 0, A0_A3_ROAD_LEN_M) * MAP_SCALE, A3_Y);
+  }
+  if (anchorId == 3) {
+    return new PVector(A0_X - constrain(along, 0, A0_A3_ROAD_LEN_M) * MAP_SCALE, A3_Y);
+  }
+  return new PVector(A0_X - constrain(along, 0, A0_A3_ROAD_LEN_M) * MAP_SCALE, A0_Y);
+}
+
 HashMap<String, VehicleState> vehicleMap = new HashMap<String, VehicleState>();
 
 void setup() {
   size(1000, 950);
   portList = Serial.list();
-  mapImage = loadImage("map.png");
 
   sine = new SinOsc(this);
   sine.freq(880);
@@ -517,12 +553,6 @@ void handleBuzzer(boolean active) {
   }
 }
 void drawStaticRoads() {
-  if (mapImage != null) {
-    tint(255, 55);
-    image(mapImage, 40, 90, 720, 405);
-    noTint();
-  }
-
   noStroke();
   rectMode(CORNER);
 
@@ -543,6 +573,7 @@ void drawStaticRoads() {
   strokeWeight(2);
   line(a0a3RoadX, A0_Y + a0a3RoadH / 2, A0_X, A0_Y + a0a3RoadH / 2);
   line(A0_X + a0a1RoadW / 2, a0a1RoadY, A0_X + a0a1RoadW / 2, A0_Y);
+  drawDistanceScale();
 
   drawAnchor(0, A0_X, A0_Y);
   drawAnchor(1, A1_X, A1_Y);
@@ -556,6 +587,38 @@ void drawStaticRoads() {
   text("A0-A1 width: " + nf(A0_A1_WIDTH_M, 0, 2) + "m / road: " + nf(A0_A1_ROAD_LEN_M, 0, 1) + "m", 20, 832);
 }
 
+void drawDistanceScale() {
+  stroke(120, 170, 220, 170);
+  strokeWeight(1);
+  fill(200, 225, 255);
+  textSize(10);
+  textAlign(CENTER, CENTER);
+
+  float hCenterY = A0_Y + (A0_A3_WIDTH_M * MAP_SCALE) / 2.0;
+  for (float m = 0; m <= A0_A3_ROAD_LEN_M; m += 5.0) {
+    float x = A0_X - m * MAP_SCALE;
+    line(x, hCenterY - 7, x, hCenterY + 7);
+    text(nf(m, 0, 0) + "m", x, hCenterY + 20);
+  }
+  float xEnd = A0_X - A0_A3_ROAD_LEN_M * MAP_SCALE;
+  line(xEnd, hCenterY - 10, xEnd, hCenterY + 10);
+  text(nf(A0_A3_ROAD_LEN_M, 0, 1) + "m", xEnd, hCenterY - 22);
+
+  float vCenterX = A0_X + (A0_A1_WIDTH_M * MAP_SCALE) / 2.0;
+  for (float m = 0; m <= A0_A1_ROAD_LEN_M; m += 5.0) {
+    float y = A0_Y - m * MAP_SCALE;
+    line(vCenterX - 7, y, vCenterX + 7, y);
+    text(nf(m, 0, 0) + "m", vCenterX + 28, y);
+  }
+  float yEnd = A0_Y - A0_A1_ROAD_LEN_M * MAP_SCALE;
+  line(vCenterX - 10, yEnd, vCenterX + 10, yEnd);
+  text(nf(A0_A1_ROAD_LEN_M, 0, 1) + "m", vCenterX - 34, yEnd);
+
+  textAlign(LEFT, TOP);
+  fill(170, 205, 255);
+  text("origin A0 (0m)", A0_X + 8, A0_Y + 8);
+}
+
 void drawAnchor(int id, float x, float y) {
   noStroke();
   fill(255, 200, 0, 55);
@@ -566,6 +629,15 @@ void drawAnchor(int id, float x, float y) {
   textAlign(CENTER, CENTER);
   textSize(12);
   text(id, x, y);
+
+  fill(255, 230, 120);
+  textSize(10);
+  String label = "";
+  if (id == 0) label = "A0 (0,0)";
+  if (id == 1) label = "A1 +" + nf(A0_A1_WIDTH_M, 0, 2) + "m";
+  if (id == 2) label = "A2 corner";
+  if (id == 3) label = "A3 +" + nf(A0_A3_WIDTH_M, 0, 2) + "m";
+  text(label, x, y + 25);
 }
 
 //void drawStaticRoads() {
