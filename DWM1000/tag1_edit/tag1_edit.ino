@@ -1,6 +1,6 @@
 /**
    DW1000Ng Tag Main Code
-   장거리 안정화 설정 반영 버전
+   ?κ굅由??덉젙???ㅼ젙 諛섏쁺 踰꾩쟾
 */
 
 #include "setting.h"
@@ -21,12 +21,20 @@
 #define TAG_RESPONSE 8
 
 #define ANCHOR_NO 4
+#define DIST_INVALID 65535
+#define MAX_ANCHOR_RETRY 1
 
 uint16_t distance_storage[ANCHOR_NO];
+uint16_t last_good_distance[ANCHOR_NO];
+uint32_t last_good_distance_millis[ANCHOR_NO];
 int other_tag_id = 0;
 uint16_t other_tag_dist = 0;
 int current_target_id = 0;
+int anchor_retry_count = 0;
 bool ranging_in_progress = false;
+bool tag_registered = false;
+uint32_t last_registered_activity = 0;
+uint32_t last_tag_response_millis = 0;
 
 volatile byte expectedMsgId = POLL_ACK;
 volatile boolean sentAck = false;
@@ -38,11 +46,15 @@ uint64_t timePollSent, timePollAckReceived, timeRangeSent;
 byte data[LEN_DATA];
 
 uint32_t lastActivity;
-uint32_t resetPeriod = 800;       // 기존 150 → 500
+uint32_t resetPeriod = 60;        // anchor timeout before retrying or moving to the next anchor
 uint16_t replyDelayTimeUS = 8000;
 
 uint32_t last_data_update_time = 0;
-const uint32_t HANG_TIMEOUT = 7000;   // 기존 2000 → 5000
+const uint32_t HANG_TIMEOUT = 12000;   // 湲곗〈 2000 ??5000
+const uint32_t TAG_REGISTER_TIMEOUT = 4000;
+const uint32_t TAG_RESPONSE_MIN_INTERVAL = 300;
+const uint32_t STALE_DISTANCE_HOLD_MS = 1000;
+const uint32_t FINAL_REPORT_REPEAT_DELAY_MS = 15;
 
 device_configuration_t DEFAULT_CONFIG =
 {
@@ -72,13 +84,15 @@ void noteActivity()
   lastActivity = millis();
 }
 
-void transmitTagNo()
+void transmitTagNo(byte requestAnchorId)
 {
   data[0] = TAG_RESPONSE;
+  data[16] = requestAnchorId;
   data[17] = MY_TAG_ID;
 
   DW1000Ng::setTransmitData(data, LEN_DATA);
   DW1000Ng::startTransmit();
+  last_tag_response_millis = millis();
 }
 
 void transmitPoll()
@@ -94,14 +108,13 @@ void transmitPoll()
   data[16] = current_target_id;
   data[17] = MY_TAG_ID;
 
+  DW1000Ng::forceTRxOff();
   DW1000Ng::setTransmitData(data, LEN_DATA);
   DW1000Ng::startTransmit();
 }
 
 void transmitFinalReport()
 {
-  Serial.println("FINAL REPORT");
-
   data[0] = FINAL_REPORT;
 
   for (int i = 0; i < ANCHOR_NO; i++)
@@ -110,7 +123,7 @@ void transmitFinalReport()
     data[1 + i * 2 + 1] = distance_storage[i] & 0xFF;
   }
 
-  // Anchor0에게 보내는 최종 거리 리포트
+  // Anchor0?먭쾶 蹂대궡??理쒖쥌 嫄곕━ 由ы룷??
   data[16] = 0;
   data[17] = MY_TAG_ID;
 
@@ -119,10 +132,21 @@ void transmitFinalReport()
   DW1000Ng::startTransmit();
 }
 
+void fillRecentLostDistances()
+{
+  for (int i = 0; i < ANCHOR_NO; i++)
+  {
+    if (distance_storage[i] == DIST_INVALID &&
+        last_good_distance[i] != DIST_INVALID &&
+        millis() - last_good_distance_millis[i] <= STALE_DISTANCE_HOLD_MS)
+    {
+      distance_storage[i] = last_good_distance[i];
+    }
+  }
+}
+
 void transmitRange()
 {
-  Serial.println("TRANSMIT RANGE");
-
   data[0] = RANGE;
 
   byte futureTimeBytes[LENGTH_TIMESTAMP];
@@ -151,40 +175,34 @@ void resetDistanceStorage()
 {
   for (int i = 0; i < ANCHOR_NO; i++)
   {
-    distance_storage[i] = 0;
+    distance_storage[i] = DIST_INVALID;
   }
 }
 
 void finishRangeCycle()
 {
+  fillRecentLostDistances();
+  transmitFinalReport();
+  delay(FINAL_REPORT_REPEAT_DELAY_MS);
   transmitFinalReport();
 
-  Serial.println("############");
-  Serial.print(distance_storage[0]);
-  Serial.print(",");
-  Serial.print(distance_storage[1]);
-  Serial.print(",");
-  Serial.print(distance_storage[2]);
-  Serial.print(",");
-  Serial.print(distance_storage[3]);
-  Serial.println("");
-
   current_target_id = 0;
+  anchor_retry_count = 0;
   expectedMsgId = POLL_ACK;
   ranging_in_progress = false;
+  tag_registered = true;
+  last_registered_activity = millis();
   last_data_update_time = millis();
 }
 
 void advanceToNextAnchor()
 {
   expectedMsgId = POLL_ACK;
+  anchor_retry_count = 0;
   current_target_id++;
 
   if (current_target_id < ANCHOR_NO)
   {
-    Serial.print(current_target_id);
-    Serial.println(" - NEW POLL");
-
     transmitPoll();
     noteActivity();
   }
@@ -198,9 +216,18 @@ void skipCurrentAnchor()
 {
   if (current_target_id < ANCHOR_NO)
   {
-    Serial.print("ANCHOR TIMEOUT : ");
-    Serial.println(current_target_id);
-    distance_storage[current_target_id] = 0;
+    if (anchor_retry_count < MAX_ANCHOR_RETRY)
+    {
+      anchor_retry_count++;
+      expectedMsgId = POLL_ACK;
+      transmitPoll();
+      noteActivity();
+      return;
+    }
+
+    distance_storage[current_target_id] = DIST_INVALID;
+    anchor_retry_count = 0;
+    last_data_update_time = millis();
   }
 
   advanceToNextAnchor();
@@ -208,8 +235,6 @@ void skipCurrentAnchor()
 
 void receiver()
 {
-  Serial.println("RECEIVER");
-
   DW1000Ng::forceTRxOff();
   DW1000Ng::startReceive();
 }
@@ -223,6 +248,7 @@ void dwm1000_process()
     if (cmd == '1')
     {
       current_target_id = 0;
+      anchor_retry_count = 0;
       expectedMsgId = POLL_ACK;
       ranging_in_progress = true;
       resetDistanceStorage();
@@ -235,7 +261,6 @@ void dwm1000_process()
 
   if (sentAck)
   {
-    Serial.println("SEND OK");
     sentAck = false;
     receiver();
   }
@@ -248,33 +273,37 @@ void dwm1000_process()
 
   if (receivedAck)
   {
-    Serial.println("RECEIVE OK");
-
     receivedAck = false;
     DW1000Ng::getReceivedData(data, LEN_DATA);
 
     if (data[0] == BEACON)
     {
-      Serial.println("BEACON");
-
       if (data[1] == MY_TAG_ID)
       {
-        current_target_id = 0;
-        expectedMsgId = POLL_ACK;
-        ranging_in_progress = true;
-        resetDistanceStorage();
+        if (!ranging_in_progress)
+        {
+          current_target_id = 0;
+          anchor_retry_count = 0;
+          expectedMsgId = POLL_ACK;
+          ranging_in_progress = true;
+          tag_registered = true;
+          last_registered_activity = millis();
+          resetDistanceStorage();
 
-        DW1000Ng::forceTRxOff();
-        transmitPoll();
+          DW1000Ng::forceTRxOff();
+          transmitPoll();
+          noteActivity();
+        }
+        else
+        {
+          receiver();
+        }
       }
       else
       {
-        Serial.print("TAG PROCESS : ");
-        Serial.println(data[1]);
         receiver();
       }
 
-      noteActivity();
       return;
     }
 
@@ -288,20 +317,31 @@ void dwm1000_process()
 
     if (data[0] == TAG_REQUEST)
     {
-      Serial.println("TAG NO REQUESTED");
+      byte request_anchor_id = data[16];
+      if (tag_registered && millis() - last_registered_activity > TAG_REGISTER_TIMEOUT)
+      {
+        tag_registered = false;
+      }
+
+      if (ranging_in_progress || tag_registered)
+      {
+        receiver();
+        return;
+      }
+
+      if (millis() - last_tag_response_millis < TAG_RESPONSE_MIN_INTERVAL)
+      {
+        receiver();
+        return;
+      }
 
       delay(random(0, 30));
       DW1000Ng::forceTRxOff();
-      transmitTagNo();
+      transmitTagNo(request_anchor_id);
 
       noteActivity();
       return;
     }
-
-    Serial.print("MY TAG ID :");
-    Serial.println(data[17]);
-    Serial.println(data[0]);
-    Serial.println(expectedMsgId);
 
     if (data[17] != MY_TAG_ID)
     {
@@ -309,41 +349,34 @@ void dwm1000_process()
       return;
     }
 
-    if (data[0] == POLL_ACK && expectedMsgId == POLL_ACK)
+    if (data[0] == POLL_ACK && expectedMsgId == POLL_ACK && data[16] == current_target_id)
     {
-      Serial.println("POLL ACK");
-
       timePollSent = DW1000Ng::getTransmitTimestamp();
       timePollAckReceived = DW1000Ng::getReceiveTimestamp();
 
       expectedMsgId = RANGE_REPORT;
       transmitRange();
     }
-    else if (data[0] == RANGE_REPORT && expectedMsgId == RANGE_REPORT)
+    else if (data[0] == RANGE_REPORT && expectedMsgId == RANGE_REPORT && data[16] == current_target_id)
     {
-      Serial.println("RANGE REPORT");
-
       float curRange;
       memcpy(&curRange, data + 1, 4);
 
       if (curRange > 0 && curRange < 100.0 && data[16] < ANCHOR_NO)
       {
         distance_storage[data[16]] = (uint16_t)min(curRange * 1000.0, 65535.0);
+        last_good_distance[data[16]] = distance_storage[data[16]];
+        last_good_distance_millis[data[16]] = millis();
+        anchor_retry_count = 0;
         last_data_update_time = millis();
       }
       else if (data[16] < ANCHOR_NO)
       {
-        distance_storage[data[16]] = 0;
+        distance_storage[data[16]] = DIST_INVALID;
       }
 
       other_tag_id = data[17];
       other_tag_dist = ((uint16_t)data[18] << 8) | data[19];
-
-      Serial.print(data[16]);
-      Serial.print(",");
-      Serial.print(other_tag_id);
-      Serial.print(",");
-      Serial.println(other_tag_dist);
 
       advanceToNextAnchor();
     }
@@ -369,10 +402,12 @@ void setup()
   DW1000Ng::attachSentHandler(handleSent);
   DW1000Ng::attachReceivedHandler(handleReceived);
 
-  Serial.print("TAG START - ID: ");
-  Serial.println(MY_TAG_ID);
-
   last_data_update_time = millis();
+  for (int i = 0; i < ANCHOR_NO; i++)
+  {
+    last_good_distance[i] = DIST_INVALID;
+    last_good_distance_millis[i] = 0;
+  }
 
   receiver();
   noteActivity();
@@ -391,7 +426,6 @@ void loop()
 
   if (millis() - last_data_update_time > HANG_TIMEOUT)
   {
-    Serial.println("System Hang Detected! Restarting...");
     delay(100);
     ESP.restart();
   }

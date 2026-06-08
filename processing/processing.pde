@@ -14,6 +14,11 @@ import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.io.File;
+import java.awt.Toolkit;
+import java.awt.datatransfer.StringSelection;
 
 Serial myPort;
 SinOsc sine;
@@ -27,9 +32,19 @@ final float A0_A1_WIDTH_M = 6.85;    // A0-A1 road width
 final float A0_A3_WIDTH_M = 7.73;    // A0-A3 road width
 final float A0_A1_ROAD_LEN_M = 15.1; // road length from A0-A1 anchor line
 final float A0_A3_ROAD_LEN_M = 38.0; // road length from A0-A3 anchor line
+final float ROAD_SWITCH_MARGIN_M = 1.0;
+final int VEHICLE_HOLD_MS = 8000;
+final float POSITION_SMOOTHING = 0.75;
+final float DIST_INVALID_M = 65.535;
+final int DUPLICATE_RANGE_SUPPRESS_MS = 80;
+final float ROAD_SWITCH_CONFIDENCE_M = 1.5;
+final int ROAD_SWITCH_CONFIRM_COUNT = 3;
+final float MAX_POSITION_JUMP_M = 8.0;
+final float MAX_POSITION_JUMP_BLEND = 0.25;
+final int LOST_GRACE_MS = 2500;
 
-final float A0_X = 620;
-final float A0_Y = 360;
+final float A0_X = 560;
+final float A0_Y = 410;
 final float A1_X = A0_X + A0_A1_WIDTH_M * MAP_SCALE;
 final float A1_Y = A0_Y;
 final float A3_X = A0_X;
@@ -50,11 +65,17 @@ int lastAutoAlarmSendTime = 0;
 
 /* 터미널 관련 변수 - 쓰레드 안전을 위해 동기화된 리스트로 선언 */
 List<String> terminalLines = Collections.synchronizedList(new ArrayList<String>());
+List<String> fullLogLines = Collections.synchronizedList(new ArrayList<String>());
 int maxTerminalLines = 6;
+PrintWriter logWriter;
+String logFilePath = "";
+int copyNoticeMillis = 0;
+String lastRangeLine = "";
+int lastRangeLineMillis = 0;
 
 class KalmanFilter {
-  float q = 0.005;
-  float r = 0.3;
+  float q = 0.08;
+  float r = 0.12;
   float x = -1.0;
   float p = 0.1;
   float k = 0.0;
@@ -64,7 +85,7 @@ class KalmanFilter {
   }
 
   float update(float measurement) {
-    if (measurement <= 0.0) {
+    if (!isValidDistance(measurement)) {
       return max(x, 0.0);
     }
     if (x == -1.0 || x == 0.0) {
@@ -79,11 +100,28 @@ class KalmanFilter {
   }
 }
 
+boolean isValidDistance(float distanceM) {
+  return distanceM > 0.0 && distanceM < DIST_INVALID_M;
+}
+
+String formatDistance(float distanceM) {
+  if (!isValidDistance(distanceM)) {
+    return "LOST";
+  }
+
+  return nf(distanceM, 0, 2) + "m";
+}
+
 class VehicleState {
   String id;
+  float[] rawDists = new float[4];
   float[] dists = new float[4];
+  float[] calcDists = new float[4];
+  float[] lastValidDists = new float[4];
+  int[] lastValidDistMillis = new int[4];
   KalmanFilter[] kfs = new KalmanFilter[4];
   PVector pos = new PVector();
+  PVector drawPos = new PVector();
   PVector prevPos = new PVector();
   float speed = 0;
   ArrayList<Float> speedHistory = new ArrayList<Float>();
@@ -92,14 +130,21 @@ class VehicleState {
   String road = "None";
   String lastRoad = "A0-A3 ROAD";
   int lastTime;
+  boolean hasPos = false;
   boolean hasEnteredCenter = false;
+  boolean hasDrawPos = false;
   int displayOrder = 0;
+  String pendingRoad = "";
+  int pendingRoadCount = 0;
 
   VehicleState(String id) {
     this.id = id;
     lastTime = millis();
     for (int i = 0; i < 4; i++) {
       kfs[i] = new KalmanFilter(-1.0);
+      calcDists[i] = DIST_INVALID_M;
+      lastValidDists[i] = DIST_INVALID_M;
+      lastValidDistMillis[i] = 0;
     }
   }
 
@@ -108,62 +153,80 @@ class VehicleState {
     float dt = (now - lastTime) / 1000.0;
     lastTime = now;
 
-    dists[0] = kfs[0].update(d1);
-    dists[1] = kfs[1].update(d2);
-    dists[2] = kfs[2].update(d3);
-    dists[3] = kfs[3].update(d4);
+    rawDists[0] = d1;
+    rawDists[1] = d2;
+    rawDists[2] = d3;
+    rawDists[3] = d4;
 
+    for (int i = 0; i < 4; i++) {
+      if (isValidDistance(rawDists[i])) {
+        lastValidDists[i] = rawDists[i];
+        lastValidDistMillis[i] = now;
+        calcDists[i] = rawDists[i];
+      } else if (now - lastValidDistMillis[i] <= LOST_GRACE_MS) {
+        calcDists[i] = lastValidDists[i];
+      } else {
+        calcDists[i] = DIST_INVALID_M;
+      }
+
+      dists[i] = kfs[i].update(calcDists[i]);
+    }
+
+    boolean hadPos = hasPos;
     prevPos.set(pos.x, pos.y);
 
     float centerX = A0_X;
     float centerY = A0_Y;
 
-    boolean hasD0 = d1 > 0.0;
-    boolean hasD1 = d2 > 0.0;
-    boolean hasD2 = d3 > 0.0;
-    boolean hasD3 = d4 > 0.0;
+    boolean hasD0 = isValidDistance(calcDists[0]);
+    boolean hasD1 = isValidDistance(calcDists[1]);
+    boolean hasD2 = isValidDistance(calcDists[2]);
+    boolean hasD3 = isValidDistance(calcDists[3]);
 
     if (hasD0 && dists[0] < 2.0) {
       road = "CENTER";
       pos.set(centerX, centerY);
       hasEnteredCenter = true;
     } else {
-      if (hasD0 && hasD3) {
-        road = "A0-A3 ROAD";
-        pos.set(projectA0A3Road(dists[0], dists[3]));
-      } else if (hasD0 && hasD1) {
-        road = "A0-A1 ROAD";
-        pos.set(projectA0A1Road(dists[0], dists[1]));
-      } else if (hasD2 && hasD3) {
-        float avgDist = (dists[2] + dists[3]) / 2.0;
-        road = "A2-A3 ROAD";
-        pos.set(A0_X - constrain(avgDist, 0, A0_A3_ROAD_LEN_M) * MAP_SCALE, A3_Y);
-      } else if (hasD1 && hasD2) {
-        float avgDist = (dists[1] + dists[2]) / 2.0;
-        road = "A1-A2 ROAD";
-        pos.set(A1_X, A0_Y - constrain(avgDist, 0, A0_A1_ROAD_LEN_M) * MAP_SCALE);
-      } else if (hasD0) {
-        road = lastRoad;
-        pos.set(projectSingleAnchorRoad(0, dists[0], road));
-      } else if (hasD3) {
-        road = "A0-A3 ROAD";
-        pos.set(projectSingleAnchorRoad(3, dists[3], road));
-      } else if (hasD1) {
-        road = "A0-A1 ROAD";
-        pos.set(projectSingleAnchorRoad(1, dists[1], road));
-      } else if (hasD2) {
-        road = lastRoad.equals("A0-A1 ROAD") ? "A0-A1 ROAD" : "A0-A3 ROAD";
-        pos.set(projectSingleAnchorRoad(2, dists[2], road));
+      PVector boxPos = estimateAnchorBoxPosition(dists, hasD0, hasD1, hasD2, hasD3);
+
+      if (boxPos != null) {
+        pos.set(boxPos);
+        road = stabilizeRoad(inferAnchorBoxRoad(pos, prevPos, hadPos));
       } else {
-        road = "PARTIAL";
+        String candidateRoad = chooseClosestRoad(hasD0, hasD1, hasD2, hasD3);
+
+        if (!candidateRoad.equals("PARTIAL")) {
+          road = stabilizeRoad(candidateRoad);
+          pos.set(projectForRoad(road, dists, hasD0, hasD1, hasD2, hasD3, pos));
+        } else {
+          road = "PARTIAL";
+        }
       }
     }
 
-    if (!road.equals("PARTIAL") && !road.equals("CENTER")) {
+    hasPos = true;
+
+    if (hadPos && !road.equals("PARTIAL")) {
+      float jumpM = dist(pos.x, pos.y, prevPos.x, prevPos.y) / MAP_SCALE;
+      if (jumpM > MAX_POSITION_JUMP_M) {
+        pos.x = lerp(prevPos.x, pos.x, MAX_POSITION_JUMP_BLEND);
+        pos.y = lerp(prevPos.y, pos.y, MAX_POSITION_JUMP_BLEND);
+      }
+    }
+
+    if (!road.equals("PARTIAL") && !road.equals("CENTER") && !road.equals("ANCHOR BOX")) {
       lastRoad = road;
     }
 
-    if (dt > 0) {
+    if (!hasDrawPos) {
+      drawPos.set(pos.x, pos.y);
+      hasDrawPos = true;
+    } else if (!road.equals("PARTIAL")) {
+      drawPos.lerp(pos, POSITION_SMOOTHING);
+    }
+
+    if (hadPos && dt > 0) {
       float distanceMoved = dist(pos.x, pos.y, prevPos.x, prevPos.y) / MAP_SCALE;
       float instantSpeed = (distanceMoved / dt) * 3.6;
       speedHistory.add(instantSpeed);
@@ -171,12 +234,141 @@ class VehicleState {
       float sum = 0;
       for (float s : speedHistory) sum += s;
       speed = sum / speedHistory.size();
+    } else {
+      speed = 0;
     }
 
     float curD = dist(pos.x, pos.y, centerX, centerY) / MAP_SCALE;
     float preD = (dist(prevPos.x, prevPos.y, centerX, centerY)) / MAP_SCALE;
     approaching = (curD < preD + 0.05);
   }
+
+  String chooseClosestRoad(boolean hasD0, boolean hasD1, boolean hasD2, boolean hasD3) {
+    String bestRoad = "PARTIAL";
+    float bestScore = Float.MAX_VALUE;
+
+    if (hasD0 && hasD3) {
+      bestRoad = "A0-A3 ROAD";
+      bestScore = dists[0] + dists[3];
+    }
+
+    if (hasD0 && hasD1 && dists[0] + dists[1] < bestScore) {
+      bestRoad = "A0-A1 ROAD";
+      bestScore = dists[0] + dists[1];
+    }
+
+    if (hasD2 && hasD3 && dists[2] + dists[3] < bestScore) {
+      bestRoad = "A2-A3 ROAD";
+      bestScore = dists[2] + dists[3];
+    }
+
+    if (hasD1 && hasD2 && dists[1] + dists[2] < bestScore) {
+      bestRoad = "A1-A2 ROAD";
+      bestScore = dists[1] + dists[2];
+    }
+
+    float lastScore = roadScore(lastRoad, hasD0, hasD1, hasD2, hasD3);
+    if (!bestRoad.equals("PARTIAL") && isValidDistance(lastScore) &&
+        lastScore <= bestScore + ROAD_SWITCH_CONFIDENCE_M) {
+      return lastRoad;
+    }
+
+    if (!bestRoad.equals("PARTIAL")) {
+      return bestRoad;
+    }
+
+    if (hasD0) return lastRoad;
+    if (hasD1) return lastRoad.equals("A1-A2 ROAD") ? "A1-A2 ROAD" : "A0-A1 ROAD";
+    if (hasD2) return lastRoad.equals("A1-A2 ROAD") ? "A1-A2 ROAD" : "A2-A3 ROAD";
+    if (hasD3) return lastRoad.equals("A2-A3 ROAD") ? "A2-A3 ROAD" : "A0-A3 ROAD";
+
+    return "PARTIAL";
+  }
+
+  float roadScore(String roadName, boolean hasD0, boolean hasD1, boolean hasD2, boolean hasD3) {
+    if (roadName.equals("A0-A3 ROAD") && hasD0 && hasD3) return dists[0] + dists[3];
+    if (roadName.equals("A0-A1 ROAD") && hasD0 && hasD1) return dists[0] + dists[1];
+    if (roadName.equals("A2-A3 ROAD") && hasD2 && hasD3) return dists[2] + dists[3];
+    if (roadName.equals("A1-A2 ROAD") && hasD1 && hasD2) return dists[1] + dists[2];
+    return Float.MAX_VALUE;
+  }
+
+  String stabilizeRoad(String candidateRoad) {
+    if (candidateRoad == null || candidateRoad.equals("None") || candidateRoad.equals("PARTIAL") ||
+        candidateRoad.equals("CENTER") || candidateRoad.equals("ANCHOR BOX")) {
+      return candidateRoad;
+    }
+
+    if (lastRoad.equals(candidateRoad)) {
+      pendingRoad = "";
+      pendingRoadCount = 0;
+      return candidateRoad;
+    }
+
+    if (pendingRoad.equals(candidateRoad)) {
+      pendingRoadCount++;
+    } else {
+      pendingRoad = candidateRoad;
+      pendingRoadCount = 1;
+    }
+
+    if (pendingRoadCount >= ROAD_SWITCH_CONFIRM_COUNT) {
+      pendingRoad = "";
+      pendingRoadCount = 0;
+      return candidateRoad;
+    }
+
+    return lastRoad;
+  }
+}
+
+PVector estimateAnchorBoxPosition(float[] ds, boolean hasD0, boolean hasD1, boolean hasD2, boolean hasD3) {
+  float localX = Float.NaN;
+  float localY = Float.NaN;
+
+  if (hasD0 && hasD1) {
+    localX = (sq(ds[0]) - sq(ds[1]) + sq(A0_A1_WIDTH_M)) / (2.0 * A0_A1_WIDTH_M);
+  } else if (hasD3 && hasD2) {
+    localX = (sq(ds[3]) - sq(ds[2]) + sq(A0_A1_WIDTH_M)) / (2.0 * A0_A1_WIDTH_M);
+  }
+
+  if (hasD0 && hasD3) {
+    localY = (sq(ds[0]) - sq(ds[3]) + sq(A0_A3_WIDTH_M)) / (2.0 * A0_A3_WIDTH_M);
+  } else if (hasD1 && hasD2) {
+    localY = (sq(ds[1]) - sq(ds[2]) + sq(A0_A3_WIDTH_M)) / (2.0 * A0_A3_WIDTH_M);
+  }
+
+  if (Float.isNaN(localX) || Float.isNaN(localY)) {
+    return null;
+  }
+
+  if (localX < -ROAD_SWITCH_MARGIN_M || localX > A0_A1_WIDTH_M + ROAD_SWITCH_MARGIN_M ||
+      localY < -ROAD_SWITCH_MARGIN_M || localY > A0_A3_WIDTH_M + ROAD_SWITCH_MARGIN_M) {
+    return null;
+  }
+
+  localX = constrain(localX, 0, A0_A1_WIDTH_M);
+  localY = constrain(localY, 0, A0_A3_WIDTH_M);
+  return new PVector(A0_X + localX * MAP_SCALE, A0_Y + localY * MAP_SCALE);
+}
+
+String inferAnchorBoxRoad(PVector currentPos, PVector previousPos, boolean hadPos) {
+  if (!hadPos) {
+    return "ANCHOR BOX";
+  }
+
+  float dx = currentPos.x - previousPos.x;
+  float dy = currentPos.y - previousPos.y;
+
+  if (abs(dx) < 2.0 && abs(dy) < 2.0) {
+    return "ANCHOR BOX";
+  }
+
+  if (abs(dx) >= abs(dy)) {
+    return "A0-A3 ROAD";
+  }
+
+  return "A0-A1 ROAD";
 }
 
 PVector projectA0A3Road(float dA0, float dA3) {
@@ -199,36 +391,105 @@ PVector projectA0A1Road(float dA0, float dA1) {
   return new PVector(A0_X + lateralFromA0 * MAP_SCALE, A0_Y - along * MAP_SCALE);
 }
 
+PVector projectA1A2Road(float dA1, float dA2) {
+  float lateralFromA1 = (sq(dA1) - sq(dA2) + sq(A0_A3_WIDTH_M)) / (2.0 * A0_A3_WIDTH_M);
+  lateralFromA1 = constrain(lateralFromA1, 0, A0_A3_WIDTH_M);
+
+  float along = sqrt(max(0, sq(dA1) - sq(lateralFromA1)));
+  along = constrain(along, 0, A0_A3_ROAD_LEN_M);
+
+  return new PVector(A1_X + along * MAP_SCALE, A1_Y + lateralFromA1 * MAP_SCALE);
+}
+
+PVector projectA3A2Road(float dA3, float dA2) {
+  float lateralFromA3 = (sq(dA3) - sq(dA2) + sq(A0_A1_WIDTH_M)) / (2.0 * A0_A1_WIDTH_M);
+  lateralFromA3 = constrain(lateralFromA3, 0, A0_A1_WIDTH_M);
+
+  float along = sqrt(max(0, sq(dA3) - sq(lateralFromA3)));
+  along = constrain(along, 0, A0_A1_ROAD_LEN_M);
+
+  return new PVector(A3_X + lateralFromA3 * MAP_SCALE, A3_Y + along * MAP_SCALE);
+}
+
+PVector projectForRoad(String roadName, float[] ds, boolean hasD0, boolean hasD1, boolean hasD2, boolean hasD3, PVector fallbackPos) {
+  if (roadName.equals("A0-A3 ROAD")) {
+    if (hasD0 && hasD3) return projectA0A3Road(ds[0], ds[3]);
+    if (hasD0) return projectSingleAnchorRoad(0, ds[0], roadName);
+    if (hasD3) return projectSingleAnchorRoad(3, ds[3], roadName);
+  }
+
+  if (roadName.equals("A0-A1 ROAD")) {
+    if (hasD0 && hasD1) return projectA0A1Road(ds[0], ds[1]);
+    if (hasD0) return projectSingleAnchorRoad(0, ds[0], roadName);
+    if (hasD1) return projectSingleAnchorRoad(1, ds[1], roadName);
+  }
+
+  if (roadName.equals("A2-A3 ROAD")) {
+    if (hasD2 && hasD3) return projectA3A2Road(ds[3], ds[2]);
+    if (hasD2) return projectSingleAnchorRoad(2, ds[2], roadName);
+    if (hasD3) return projectSingleAnchorRoad(3, ds[3], roadName);
+  }
+
+  if (roadName.equals("A1-A2 ROAD")) {
+    if (hasD1 && hasD2) return projectA1A2Road(ds[1], ds[2]);
+    if (hasD1) return projectSingleAnchorRoad(1, ds[1], roadName);
+    if (hasD2) return projectSingleAnchorRoad(2, ds[2], roadName);
+  }
+
+  return fallbackPos.copy();
+}
+
 PVector projectSingleAnchorRoad(int anchorId, float distanceM, String road) {
   float along = max(0, distanceM);
 
   if (road.equals("A0-A1 ROAD")) {
-    if (anchorId == 2) {
-      return new PVector(A1_X, A2_Y - constrain(along, 0, A0_A1_ROAD_LEN_M) * MAP_SCALE);
-    }
-    if (anchorId == 1) {
-      return new PVector(A1_X, A1_Y - constrain(along, 0, A0_A1_ROAD_LEN_M) * MAP_SCALE);
-    }
-    return new PVector(A0_X, A0_Y - constrain(along, 0, A0_A1_ROAD_LEN_M) * MAP_SCALE);
+    float centerOffset = A0_A1_WIDTH_M / 2.0;
+    along = sqrt(max(0, sq(distanceM) - sq(centerOffset)));
+    along = constrain(along, 0, A0_A1_ROAD_LEN_M);
+    return new PVector(A0_X + centerOffset * MAP_SCALE, A0_Y - along * MAP_SCALE);
   }
 
-  if (anchorId == 2) {
-    return new PVector(A2_X - constrain(along, 0, A0_A3_ROAD_LEN_M) * MAP_SCALE, A3_Y);
+  if (road.equals("A1-A2 ROAD")) {
+    float centerOffset = A0_A3_WIDTH_M / 2.0;
+    along = sqrt(max(0, sq(distanceM) - sq(centerOffset)));
+    along = constrain(along, 0, A0_A3_ROAD_LEN_M);
+    return new PVector(A1_X + along * MAP_SCALE, A1_Y + centerOffset * MAP_SCALE);
   }
-  if (anchorId == 3) {
-    return new PVector(A0_X - constrain(along, 0, A0_A3_ROAD_LEN_M) * MAP_SCALE, A3_Y);
+
+  if (road.equals("A2-A3 ROAD")) {
+    float centerOffset = A0_A1_WIDTH_M / 2.0;
+    along = sqrt(max(0, sq(distanceM) - sq(centerOffset)));
+    along = constrain(along, 0, A0_A1_ROAD_LEN_M);
+    return new PVector(A3_X + centerOffset * MAP_SCALE, A3_Y + along * MAP_SCALE);
   }
-  return new PVector(A0_X - constrain(along, 0, A0_A3_ROAD_LEN_M) * MAP_SCALE, A0_Y);
+
+  if (road.equals("A0-A3 ROAD")) {
+    float centerOffset = A0_A3_WIDTH_M / 2.0;
+    along = sqrt(max(0, sq(distanceM) - sq(centerOffset)));
+    along = constrain(along, 0, A0_A3_ROAD_LEN_M);
+    return new PVector(A0_X - along * MAP_SCALE, A0_Y + centerOffset * MAP_SCALE);
+  }
+
+  return new PVector(A0_X, A0_Y);
 }
 
 HashMap<String, VehicleState> vehicleMap = new HashMap<String, VehicleState>();
 
 void setup() {
-  size(1000, 950);
+  size(1500, 1050);
   portList = Serial.list();
 
   sine = new SinOsc(this);
   sine.freq(880);
+
+  File logDir = new File(sketchPath("logs"));
+  if (!logDir.exists()) {
+    logDir.mkdirs();
+  }
+
+  String fileName = "dwm_log_" + new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date()) + ".txt";
+  logFilePath = sketchPath("logs/" + fileName);
+  logWriter = createWriter(logFilePath);
 }
 
 void draw() {
@@ -246,11 +507,11 @@ void draw() {
   Iterator<Map.Entry<String, VehicleState>> it = vehicleMap.entrySet().iterator();
   while (it.hasNext()) {
     VehicleState v = it.next().getValue();
-    if (millis() - v.lastTime > 3000) it.remove();
+    if (millis() - v.lastTime > VEHICLE_HOLD_MS) it.remove();
     else {
       v.displayOrder = idx;
       color vColor = (v.hasEnteredCenter) ? color(0, 255, 180) : (v.speed >= SPEED_LIMIT ? color(255, 45, 85) : color(0, 240, 255));
-      drawVehicle(v.pos.x, v.pos.y, v.speed, v.id, vColor);
+      drawVehicle(v.drawPos.x, v.drawPos.y, v.speed, v.id, vColor, v);
 
       if (!v.hasEnteredCenter && v.speed >= SPEED_LIMIT) anyVehicleSpeeding = true;
       if (!v.hasEnteredCenter && !v.road.equals("None") && !v.road.equals("TRANSITION")) {
@@ -349,6 +610,19 @@ void drawDashboard() {
   textSize(11);
   textAlign(CENTER, CENTER);
   text("SYS.STATUS: " + connectionStatus, 100, bY - 20);
+
+  float copyY = height - 50;
+  fill(35, 40, 55);
+  rect(bX, copyY, bW, 32, 6);
+  fill(255);
+  textSize(12);
+  text("COPY LOG", bX + (bW/2.0), copyY + 16);
+
+  if (millis() - copyNoticeMillis < 1500) {
+    fill(0, 255, 180);
+    textSize(10);
+    text("COPIED", bX + (bW/2.0), copyY - 10);
+  }
 }
 
 void drawTerminal()
@@ -416,6 +690,10 @@ void mousePressed() {
       buzzerActive = true;
     }
   }
+
+  if (mouseX >= 15 && mouseX <= 185 && mouseY >= height - 50 && mouseY <= height - 18) {
+    copyFullLogToClipboard();
+  }
 }
 
 // [추가] 마우스를 떼면 부저 비활성화
@@ -423,30 +701,30 @@ void mouseReleased() {
   buzzerActive = false;
 }
 
+void keyPressed() {
+  if (key == 'c' || key == 'C') {
+    copyFullLogToClipboard();
+  }
+}
+
+void copyFullLogToClipboard() {
+  String joined = "";
+  synchronized(fullLogLines) {
+    joined = join(fullLogLines.toArray(new String[fullLogLines.size()]), "\n");
+  }
+
+  StringSelection selection = new StringSelection(joined);
+  Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, selection);
+  copyNoticeMillis = millis();
+}
+
 void serialEvent(Serial p) {
   try {
-    String inString = p.readString();
-    if (inString != null) {
-      inString = trim(inString);
-
-      synchronized(terminalLines) {
-        terminalLines.add(inString);
-        if (terminalLines.size() > maxTerminalLines) terminalLines.remove(0);
-      }
-
-      String[] parts = split(inString, ':');
-      if (parts.length == 2) {
-        String id = parts[0];
-        String[] distStrs = split(parts[1], ',');
-        if (distStrs.length == 4) {
-          if (!vehicleMap.containsKey(id)) vehicleMap.put(id, new VehicleState(id));
-          vehicleMap.get(id).update(
-            float(distStrs[0])/1000.0,
-            float(distStrs[1])/1000.0,
-            float(distStrs[2])/1000.0,
-            float(distStrs[3])/1000.0
-            );
-        }
+    String serialChunk = p.readString();
+    if (serialChunk != null) {
+      String[] lines = splitTokens(serialChunk, "\r\n");
+      for (String line : lines) {
+        handleSerialLine(trim(line));
       }
     }
   }
@@ -454,11 +732,61 @@ void serialEvent(Serial p) {
   }
 }
 
+void handleSerialLine(String inString) {
+  if (inString == null || inString.length() == 0) {
+    return;
+  }
+
+  boolean isRangeLine = inString.matches("T\\d+:\\d+,\\d+,\\d+,\\d+");
+  if (!isRangeLine) {
+    return;
+  }
+
+  int now = millis();
+  if (inString.equals(lastRangeLine) && now - lastRangeLineMillis < DUPLICATE_RANGE_SUPPRESS_MS) {
+    return;
+  }
+  lastRangeLine = inString;
+  lastRangeLineMillis = now;
+
+  String timestamp = new SimpleDateFormat("HH:mm:ss.SSS").format(new Date());
+  String logLine = timestamp + " " + inString;
+
+  synchronized(terminalLines) {
+    terminalLines.add(logLine);
+    if (terminalLines.size() > maxTerminalLines) terminalLines.remove(0);
+  }
+
+  synchronized(fullLogLines) {
+    fullLogLines.add(logLine);
+  }
+
+  if (logWriter != null) {
+    logWriter.println(logLine);
+    logWriter.flush();
+  }
+
+  String[] parts = split(inString, ':');
+  if (parts.length == 2) {
+    String id = parts[0];
+    String[] distStrs = split(parts[1], ',');
+    if (distStrs.length == 4) {
+      if (!vehicleMap.containsKey(id)) vehicleMap.put(id, new VehicleState(id));
+      vehicleMap.get(id).update(
+        float(distStrs[0]) / 1000.0,
+        float(distStrs[1]) / 1000.0,
+        float(distStrs[2]) / 1000.0,
+        float(distStrs[3]) / 1000.0
+        );
+    }
+  }
+}
+
 void drawGlobalStatus() {
   float baseX = 10;
   float baseY = 10;
   float panelW = 240;
-  float itemH = 115;
+  float itemH = 130;
 
   fill(15, 18, 25, 200);
   stroke(0, 255, 255, 80);
@@ -477,7 +805,7 @@ void drawGlobalStatus() {
 
     fill(255, 20);
     noStroke();
-    rect(baseX + 10, yOff - 20, panelW - 20, 105, 5);
+    rect(baseX + 10, yOff - 20, panelW - 20, 120, 5);
 
     fill(255);
     textSize(14);
@@ -487,20 +815,21 @@ void drawGlobalStatus() {
     text("LOC: " + v.road, baseX + 110, yOff);
 
     for (int j = 0; j < 4; j++) {
-      fill(0, 255, 255, 150);
-      text("A" + j + ": " + nf(v.dists[j], 0, 2) + "m", baseX + 25 + (j % 2) * 90, yOff + 20 + (j / 2) * 18);
+      if (isValidDistance(v.rawDists[j])) fill(0, 255, 255, 150);
+      else fill(255, 90, 120, 160);
+      text("A" + j + ": " + formatDistance(v.rawDists[j]), baseX + 25 + (j % 2) * 90, yOff + 20 + (j / 2) * 18);
     }
 
     if (!v.hasEnteredCenter && v.speed >= SPEED_LIMIT) fill(255, 45, 85);
     else fill(0, 255, 180);
     textSize(13);
-    text("SPEED: " + nf(v.speed, 0, 1) + " km/h", baseX + 20, yOff + 55);
+    text("SPEED: " + nf(v.speed, 0, 1) + " km/h", baseX + 20, yOff + 65);
 
     i++;
   }
 }
 
-void drawVehicle(float x, float y, float spd, String id, color c) {
+void drawVehicle(float x, float y, float spd, String id, color c, VehicleState v) {
   noStroke();
   for (int i=1; i<5; i++) {
     fill(c, 50/i);
@@ -514,6 +843,16 @@ void drawVehicle(float x, float y, float spd, String id, color c) {
   text(id, x, y - 45);
   textSize(16);
   text(nf(spd, 0, 1) + " km/h", x, y - 25);
+
+  textSize(10);
+  textAlign(LEFT, TOP);
+  fill(220);
+  String distLabel =
+    "A0 " + formatDistance(v.rawDists[0]) + "\n" +
+    "A1 " + formatDistance(v.rawDists[1]) + "\n" +
+    "A2 " + formatDistance(v.rawDists[2]) + "\n" +
+    "A3 " + formatDistance(v.rawDists[3]);
+  text(distLabel, x + 18, y + 12);
 }
 
 void drawWarning(String road, String id, float spd, int order)
@@ -559,20 +898,20 @@ void drawStaticRoads() {
   fill(25, 30, 45, 230);
   float a0a3RoadX = A0_X - A0_A3_ROAD_LEN_M * MAP_SCALE;
   float a0a3RoadY = A0_Y;
-  float a0a3RoadW = A0_A3_ROAD_LEN_M * MAP_SCALE;
+  float a0a3RoadW = (A0_A3_ROAD_LEN_M * 2.0 + A0_A1_WIDTH_M) * MAP_SCALE;
   float a0a3RoadH = A0_A3_WIDTH_M * MAP_SCALE;
   rect(a0a3RoadX, a0a3RoadY, a0a3RoadW, a0a3RoadH, 8);
 
   float a0a1RoadX = A0_X;
   float a0a1RoadY = A0_Y - A0_A1_ROAD_LEN_M * MAP_SCALE;
   float a0a1RoadW = A0_A1_WIDTH_M * MAP_SCALE;
-  float a0a1RoadH = A0_A1_ROAD_LEN_M * MAP_SCALE;
+  float a0a1RoadH = (A0_A1_ROAD_LEN_M * 2.0 + A0_A3_WIDTH_M) * MAP_SCALE;
   rect(a0a1RoadX, a0a1RoadY, a0a1RoadW, a0a1RoadH, 8);
 
   stroke(50, 70, 100);
   strokeWeight(2);
-  line(a0a3RoadX, A0_Y + a0a3RoadH / 2, A0_X, A0_Y + a0a3RoadH / 2);
-  line(A0_X + a0a1RoadW / 2, a0a1RoadY, A0_X + a0a1RoadW / 2, A0_Y);
+  line(a0a3RoadX, A0_Y + a0a3RoadH / 2, a0a3RoadX + a0a3RoadW, A0_Y + a0a3RoadH / 2);
+  line(A0_X + a0a1RoadW / 2, a0a1RoadY, A0_X + a0a1RoadW / 2, a0a1RoadY + a0a1RoadH);
   drawDistanceScale();
 
   drawAnchor(0, A0_X, A0_Y);
@@ -583,8 +922,8 @@ void drawStaticRoads() {
   fill(180, 210, 255);
   textAlign(LEFT, TOP);
   textSize(12);
-  text("A0-A3 width: " + nf(A0_A3_WIDTH_M, 0, 2) + "m / road: " + nf(A0_A3_ROAD_LEN_M, 0, 1) + "m", 20, 815);
-  text("A0-A1 width: " + nf(A0_A1_WIDTH_M, 0, 2) + "m / road: " + nf(A0_A1_ROAD_LEN_M, 0, 1) + "m", 20, 832);
+  text("A0-A3 width: " + nf(A0_A3_WIDTH_M, 0, 2) + "m / road: +/-" + nf(A0_A3_ROAD_LEN_M, 0, 1) + "m", 20, 815);
+  text("A0-A1 width: " + nf(A0_A1_WIDTH_M, 0, 2) + "m / road: +/-" + nf(A0_A1_ROAD_LEN_M, 0, 1) + "m", 20, 832);
 }
 
 void drawDistanceScale() {
@@ -596,23 +935,35 @@ void drawDistanceScale() {
 
   float hCenterY = A0_Y + (A0_A3_WIDTH_M * MAP_SCALE) / 2.0;
   for (float m = 0; m <= A0_A3_ROAD_LEN_M; m += 5.0) {
-    float x = A0_X - m * MAP_SCALE;
-    line(x, hCenterY - 7, x, hCenterY + 7);
-    text(nf(m, 0, 0) + "m", x, hCenterY + 20);
+    float leftX = A0_X - m * MAP_SCALE;
+    float rightX = A0_X + A0_A1_WIDTH_M * MAP_SCALE + m * MAP_SCALE;
+    line(leftX, hCenterY - 7, leftX, hCenterY + 7);
+    line(rightX, hCenterY - 7, rightX, hCenterY + 7);
+    text(nf(m, 0, 0) + "m", leftX, hCenterY + 20);
+    text(nf(m, 0, 0) + "m", rightX, hCenterY + 20);
   }
   float xEnd = A0_X - A0_A3_ROAD_LEN_M * MAP_SCALE;
+  float xEndRight = A0_X + A0_A1_WIDTH_M * MAP_SCALE + A0_A3_ROAD_LEN_M * MAP_SCALE;
   line(xEnd, hCenterY - 10, xEnd, hCenterY + 10);
+  line(xEndRight, hCenterY - 10, xEndRight, hCenterY + 10);
   text(nf(A0_A3_ROAD_LEN_M, 0, 1) + "m", xEnd, hCenterY - 22);
+  text(nf(A0_A3_ROAD_LEN_M, 0, 1) + "m", xEndRight, hCenterY - 22);
 
   float vCenterX = A0_X + (A0_A1_WIDTH_M * MAP_SCALE) / 2.0;
   for (float m = 0; m <= A0_A1_ROAD_LEN_M; m += 5.0) {
-    float y = A0_Y - m * MAP_SCALE;
-    line(vCenterX - 7, y, vCenterX + 7, y);
-    text(nf(m, 0, 0) + "m", vCenterX + 28, y);
+    float topY = A0_Y - m * MAP_SCALE;
+    float bottomY = A0_Y + A0_A3_WIDTH_M * MAP_SCALE + m * MAP_SCALE;
+    line(vCenterX - 7, topY, vCenterX + 7, topY);
+    line(vCenterX - 7, bottomY, vCenterX + 7, bottomY);
+    text(nf(m, 0, 0) + "m", vCenterX + 28, topY);
+    text(nf(m, 0, 0) + "m", vCenterX + 28, bottomY);
   }
   float yEnd = A0_Y - A0_A1_ROAD_LEN_M * MAP_SCALE;
+  float yEndBottom = A0_Y + A0_A3_WIDTH_M * MAP_SCALE + A0_A1_ROAD_LEN_M * MAP_SCALE;
   line(vCenterX - 10, yEnd, vCenterX + 10, yEnd);
+  line(vCenterX - 10, yEndBottom, vCenterX + 10, yEndBottom);
   text(nf(A0_A1_ROAD_LEN_M, 0, 1) + "m", vCenterX - 34, yEnd);
+  text(nf(A0_A1_ROAD_LEN_M, 0, 1) + "m", vCenterX - 34, yEndBottom);
 
   textAlign(LEFT, TOP);
   fill(170, 205, 255);

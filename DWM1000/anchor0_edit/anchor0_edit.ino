@@ -3,28 +3,40 @@
    장거리 안정화 설정 반영 버전
 */
 
+#include "setting.h"
+#define MAX_TAG_ID 256
+#define ANCHOR_NO 4
+#define DIST_INVALID 65535
+
 int active_tag_count = 0;
 int active_tag_list[10];
 int active_tag_heard_anchor[10];
-
 int tag_list[10];
 unsigned long tag_millis[10];
+unsigned long tag_distance_millis[10];
 int tag_heard_anchor[10];
 int prev_active_tag_count = -1;
 int prev_active_tag_list[10];
 int prev_active_tag_heard_anchor[10];
 int last_reported_tag_id_by_anchor[4];
 unsigned long last_anchor_report_print_millis[4];
+uint8_t tag_final_timeout_count[MAX_TAG_ID];
 
 int id_index = 0;
 unsigned long prev_send_beacon_millis;
+bool beacon_outstanding = false;
+int outstanding_tag_id = -1;
+unsigned long beacon_sent_millis = 0;
+unsigned long last_final_report_millis = 0;
 
 unsigned long tag_id_request_millis;
-#define TAG_RESPONSE_DELAY 100
-
-#include "setting.h"
-#define MAX_TAG_ID 30
-#define ANCHOR_NO 4
+#define TAG_RESPONSE_DELAY 120
+bool a0_discovery_waiting = false;
+bool a0_found_tag_this_discovery = false;
+unsigned long a0_discovery_start_millis = 0;
+bool a2_discovery_waiting = false;
+unsigned long a2_discovery_start_millis = 0;
+uint8_t a2_aux_discovery_counter = 0;
 
 #define USE_PA_LNA
 #include <SPI.h>
@@ -37,9 +49,18 @@ uint16_t distance_storage[ANCHOR_NO];
 uint16_t all_tags_dist[MAX_TAG_ID];
 
 uint32_t last_tag_print[MAX_TAG_ID];
+uint32_t last_tag_report_hash[MAX_TAG_ID];
 const uint32_t PRINT_INTERVAL = 100;
+const uint32_t DUPLICATE_REPORT_SUPPRESS_MS = 80;
+const uint32_t POST_FINAL_REPORT_GUARD_MS = 40;
 const uint32_t ANCHOR_REPORT_PRINT_INTERVAL = 1000;
-const uint32_t TAG_IDLE_TIMEOUT = 6000;
+const uint32_t TAG_IDLE_TIMEOUT = 30000;
+const uint32_t BEACON_SLOT_GUARD_MS = 500;
+const uint32_t TAG_REQUEST_INTERVAL_EMPTY = 300;
+const uint32_t TAG_REQUEST_INTERVAL_ACTIVE = 1500;
+const uint32_t A0_DIRECT_DISCOVERY_WAIT = 100;
+const uint32_t A0_A2_DISCOVERY_TIMEOUT = 150;
+const uint8_t FINAL_REPORT_MAX_TIMEOUTS = 3;
 
 #define POLL 0
 #define POLL_ACK 1
@@ -53,6 +74,9 @@ const uint32_t TAG_IDLE_TIMEOUT = 6000;
 #define ANCHOR_TAG_REPORT 9
 #define BEACON_DELEGATE 10
 #define DELEGATED_FINAL_REPORT 11
+#define A2_DISCOVERY_GO 12
+#define A2_DISCOVERY_REPORT 13
+#define A2_DISCOVERY_EMPTY 14
 
 volatile byte expectedMsgId = POLL;
 volatile boolean sentAck = false;
@@ -151,6 +175,7 @@ void setup()
   {
     tag_list[i] = -1;
     tag_millis[i] = 0;
+    tag_distance_millis[i] = 0;
     tag_heard_anchor[i] = -1;
     active_tag_list[i] = -1;
     active_tag_heard_anchor[i] = -1;
@@ -162,6 +187,14 @@ void setup()
   {
     last_reported_tag_id_by_anchor[i] = -1;
     last_anchor_report_print_millis[i] = 0;
+  }
+
+  for (int i = 0; i < MAX_TAG_ID; i++)
+  {
+    tag_final_timeout_count[i] = 0;
+    last_tag_print[i] = 0;
+    last_tag_report_hash[i] = 0;
+    all_tags_dist[i] = DIST_INVALID;
   }
 
   DW1000Ng::initialize(PIN_SS, PIN_IRQ, PIN_RST);
@@ -191,11 +224,6 @@ void send_beacon(int id)
 
 void send_beacon_delegate(int delegate_anchor_id, int tag_id)
 {
-  Serial.print("DELEGATE TAG ");
-  Serial.print(tag_id);
-  Serial.print(" TO A");
-  Serial.println(delegate_anchor_id);
-
   data[0] = BEACON_DELEGATE;
   data[1] = tag_id;
   data[16] = delegate_anchor_id;
@@ -219,13 +247,62 @@ void send_tag_request()
   tag_id_request_millis = millis();
 }
 
+void start_a0_discovery()
+{
+  send_tag_request();
+  a0_discovery_waiting = true;
+  a0_found_tag_this_discovery = false;
+  a0_discovery_start_millis = millis();
+}
+
+void send_a2_discovery_go()
+{
+  data[0] = A2_DISCOVERY_GO;
+  data[16] = 2;
+  data[17] = 0;
+
+  DW1000Ng::forceTRxOff();
+  DW1000Ng::setTransmitData(data, LEN_DATA);
+  DW1000Ng::startTransmit();
+
+  a2_discovery_waiting = true;
+  a2_discovery_start_millis = millis();
+}
+
+bool should_send_scheduled_tag_request()
+{
+  uint32_t interval = active_tag_count == 0 ? TAG_REQUEST_INTERVAL_EMPTY : TAG_REQUEST_INTERVAL_ACTIVE;
+  return tag_id_request_millis == 0 || millis() - tag_id_request_millis >= interval;
+}
+
+bool is_discovery_busy()
+{
+  return a0_discovery_waiting || a2_discovery_waiting;
+}
+
+bool is_post_final_report_guard_active()
+{
+  return millis() - last_final_report_millis < POST_FINAL_REPORT_GUARD_MS;
+}
+
 void remove_idle_tag_list()
 {
   for (int i = 0; i < 10; i++)
   {
+    if (tag_list[i] == -1)
+    {
+      continue;
+    }
+
     if ((millis() - tag_millis[i]) > TAG_IDLE_TIMEOUT)
     {
+      if (tag_list[i] >= 0 && tag_list[i] < MAX_TAG_ID)
+      {
+        tag_final_timeout_count[tag_list[i]] = 0;
+      }
       tag_list[i] = -1;
+      tag_millis[i] = 0;
+      tag_distance_millis[i] = 0;
       tag_heard_anchor[i] = -1;
     }
   }
@@ -325,7 +402,12 @@ bool update_tag_status(int tag_id, int heard_anchor_id)
       {
         tag_list[j] = tag_id;
         tag_millis[j] = millis();
+        tag_distance_millis[j] = millis();
         tag_heard_anchor[j] = heard_anchor_id;
+        if (tag_id >= 0 && tag_id < MAX_TAG_ID)
+        {
+          tag_final_timeout_count[tag_id] = 0;
+        }
         flag2 = true;
         break;
       }
@@ -340,6 +422,150 @@ bool update_tag_status(int tag_id, int heard_anchor_id)
   return true;
 }
 
+void mark_tag_distance_received(int tag_id)
+{
+  if (tag_id >= 0 && tag_id < MAX_TAG_ID)
+  {
+    tag_final_timeout_count[tag_id] = 0;
+  }
+
+  for (int i = 0; i < 10; i++)
+  {
+    if (tag_list[i] == tag_id)
+    {
+      tag_distance_millis[i] = millis();
+      return;
+    }
+  }
+}
+
+void mark_beacon_outstanding(int tag_id)
+{
+  beacon_outstanding = true;
+  outstanding_tag_id = tag_id;
+  beacon_sent_millis = millis();
+}
+
+void clear_beacon_outstanding()
+{
+  beacon_outstanding = false;
+  outstanding_tag_id = -1;
+  beacon_sent_millis = 0;
+}
+
+void remove_tag_by_id(int tag_id)
+{
+  for (int i = 0; i < 10; i++)
+  {
+    if (tag_list[i] == tag_id)
+    {
+      tag_list[i] = -1;
+      tag_millis[i] = 0;
+      tag_distance_millis[i] = 0;
+      tag_heard_anchor[i] = -1;
+    }
+  }
+
+  if (tag_id >= 0 && tag_id < MAX_TAG_ID)
+  {
+    tag_final_timeout_count[tag_id] = 0;
+  }
+}
+
+void finish_a0_discovery_if_needed()
+{
+  if (!a0_discovery_waiting)
+  {
+    return;
+  }
+
+  if (millis() - a0_discovery_start_millis < A0_DIRECT_DISCOVERY_WAIT)
+  {
+    return;
+  }
+
+  a0_discovery_waiting = false;
+  remove_idle_tag_list();
+  update_active_tag_list();
+
+  bool should_run_a2_discovery = false;
+
+  if (!a0_found_tag_this_discovery)
+  {
+    should_run_a2_discovery = true;
+    a2_aux_discovery_counter = 0;
+  }
+  else if (active_tag_count == 1)
+  {
+    a2_aux_discovery_counter++;
+    if (a2_aux_discovery_counter >= 3)
+    {
+      should_run_a2_discovery = true;
+      a2_aux_discovery_counter = 0;
+    }
+  }
+  else
+  {
+    a2_aux_discovery_counter = 0;
+  }
+
+  if (should_run_a2_discovery)
+  {
+    send_a2_discovery_go();
+  }
+}
+
+void handle_a2_discovery_timeout()
+{
+  if (a2_discovery_waiting && millis() - a2_discovery_start_millis > A0_A2_DISCOVERY_TIMEOUT)
+  {
+    a2_discovery_waiting = false;
+  }
+}
+
+void handle_a2_discovery_report()
+{
+  byte reporter_anchor_id = data[1];
+  byte tag_count = data[2];
+  if (tag_count > 8) tag_count = 8;
+
+  for (byte i = 0; i < tag_count; i++)
+  {
+    update_tag_status(data[3 + i], reporter_anchor_id);
+  }
+
+  a2_discovery_waiting = false;
+  update_active_tag_list();
+}
+
+void handle_beacon_slot_timeout()
+{
+  if (!beacon_outstanding)
+  {
+    return;
+  }
+
+  if (millis() - beacon_sent_millis <= BEACON_SLOT_GUARD_MS)
+  {
+    return;
+  }
+
+  if (outstanding_tag_id >= 0 && outstanding_tag_id < MAX_TAG_ID)
+  {
+    tag_final_timeout_count[outstanding_tag_id]++;
+
+    if (tag_final_timeout_count[outstanding_tag_id] >= FINAL_REPORT_MAX_TIMEOUTS)
+    {
+      remove_tag_by_id(outstanding_tag_id);
+      update_active_tag_list();
+      if (id_index > active_tag_count) id_index = 0;
+    }
+  }
+
+  prev_succeed_millis = millis();
+  clear_beacon_outstanding();
+}
+
 bool should_print_anchor_tag_report(byte reporter_anchor_id, int tag_id)
 {
   if (reporter_anchor_id >= ANCHOR_NO)
@@ -352,6 +578,63 @@ bool should_print_anchor_tag_report(byte reporter_anchor_id, int tag_id)
   {
     last_reported_tag_id_by_anchor[reporter_anchor_id] = tag_id;
     last_anchor_report_print_millis[reporter_anchor_id] = millis();
+    return true;
+  }
+
+  return false;
+}
+
+bool has_invalid_distance()
+{
+  for (int i = 0; i < ANCHOR_NO; i++)
+  {
+    if (distance_storage[i] == DIST_INVALID)
+    {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+uint32_t current_report_hash()
+{
+  uint32_t hash = 2166136261UL;
+
+  for (int i = 0; i < ANCHOR_NO; i++)
+  {
+    hash ^= distance_storage[i];
+    hash *= 16777619UL;
+  }
+
+  return hash;
+}
+
+bool should_print_final_report(byte tag_id)
+{
+  if (tag_id >= MAX_TAG_ID)
+  {
+    return true;
+  }
+
+  uint32_t report_hash = current_report_hash();
+  if (report_hash == last_tag_report_hash[tag_id] &&
+      millis() - last_tag_print[tag_id] < DUPLICATE_REPORT_SUPPRESS_MS)
+  {
+    return false;
+  }
+
+  if (has_invalid_distance())
+  {
+    last_tag_print[tag_id] = millis();
+    last_tag_report_hash[tag_id] = report_hash;
+    return true;
+  }
+
+  if (millis() - last_tag_print[tag_id] >= PRINT_INTERVAL)
+  {
+    last_tag_print[tag_id] = millis();
+    last_tag_report_hash[tag_id] = report_hash;
     return true;
   }
 
@@ -377,40 +660,58 @@ void loop()
 
     if (cmd == '2')
     {
-      send_tag_request();
+      if (!beacon_outstanding && !is_discovery_busy())
+      {
+        start_a0_discovery();
+      }
     }
   }
 
   if (MY_ID == 0)
   {
-    if ((millis() - prev_send_beacon_millis) > PRINT_INTERVAL)
+    if (!sentAck && !receivedAck)
     {
-      prev_send_beacon_millis = millis();
+      handle_beacon_slot_timeout();
+      finish_a0_discovery_if_needed();
+      handle_a2_discovery_timeout();
 
-      if (id_index == 0)
+      if (!beacon_outstanding && !is_discovery_busy() && !is_post_final_report_guard_active() &&
+          (millis() - prev_send_beacon_millis) > PRINT_INTERVAL)
       {
-        remove_idle_tag_list();
-        update_active_tag_list();
-      }
+        prev_send_beacon_millis = millis();
 
-      if (id_index == active_tag_count)
-      {
-        send_tag_request();
-      }
-      else
-      {
-        if (active_tag_heard_anchor[id_index] != 2)
+        if (id_index == 0)
         {
-          send_beacon(active_tag_list[id_index]);
+          remove_idle_tag_list();
+          update_active_tag_list();
+        }
+
+        if (id_index == active_tag_count)
+        {
+          if (should_send_scheduled_tag_request())
+          {
+            start_a0_discovery();
+          }
         }
         else
         {
-          send_beacon_delegate(active_tag_heard_anchor[id_index], active_tag_list[id_index]);
-        }
-      }
+          int target_tag_id = active_tag_list[id_index];
 
-      id_index++;
-      if (id_index > active_tag_count) id_index = 0;
+          if (active_tag_heard_anchor[id_index] != 2)
+          {
+            send_beacon(target_tag_id);
+          }
+          else
+          {
+            send_beacon_delegate(active_tag_heard_anchor[id_index], target_tag_id);
+          }
+
+          mark_beacon_outstanding(target_tag_id);
+        }
+
+        id_index++;
+        if (id_index > active_tag_count) id_index = 0;
+      }
     }
   }
 
@@ -442,18 +743,28 @@ void loop()
     byte msgId = data[0];
     byte current_tag_id = data[17];
 
+    if (msgId == A2_DISCOVERY_REPORT && data[16] == MY_ID)
+    {
+      handle_a2_discovery_report();
+      receiver();
+      prev_succeed_millis = millis();
+      noteActivity();
+      return;
+    }
+
+    if (msgId == A2_DISCOVERY_EMPTY && data[16] == MY_ID)
+    {
+      a2_discovery_waiting = false;
+      receiver();
+      prev_succeed_millis = millis();
+      noteActivity();
+      return;
+    }
+
     if (msgId == ANCHOR_TAG_REPORT)
     {
       byte reporter_anchor_id = data[1];
       update_tag_status(current_tag_id, reporter_anchor_id);
-
-      if (should_print_anchor_tag_report(reporter_anchor_id, current_tag_id))
-      {
-        Serial.print("ANCHOR TAG REPORT FROM A");
-        Serial.print(reporter_anchor_id);
-        Serial.print(" : ");
-        Serial.println(current_tag_id);
-      }
 
       receiver();
       prev_succeed_millis = millis();
@@ -461,25 +772,20 @@ void loop()
       return;
     }
 
-    if (millis() < tag_id_request_millis + TAG_RESPONSE_DELAY)
+    if (millis() < tag_id_request_millis + TAG_RESPONSE_DELAY && msgId == TAG_RESPONSE && data[16] == MY_ID)
     {
       prev_send_beacon_millis = millis();
 
-      if (msgId == TAG_RESPONSE)
-      {
-        update_tag_status(data[17], MY_ID);
-        prev_succeed_millis = millis();
-        receiver();
-      }
+      update_tag_status(data[17], MY_ID);
+      a0_found_tag_this_discovery = true;
+      prev_succeed_millis = millis();
+      receiver();
 
       return;
     }
 
     if (msgId == POLL)
     {
-      update_tag_status(data[17], MY_ID);
-      prev_succeed_millis = millis();
-
       for (int i = 0; i < ANCHOR_NO; i++)
       {
         distance_storage[i] = ((uint16_t)data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
@@ -488,7 +794,13 @@ void loop()
 
     if (msgId == FINAL_REPORT || msgId == DELEGATED_FINAL_REPORT)
     {
+      last_final_report_millis = millis();
       update_tag_status(data[17], msgId == DELEGATED_FINAL_REPORT ? data[15] : MY_ID);
+      mark_tag_distance_received(data[17]);
+      if (beacon_outstanding && outstanding_tag_id == data[17])
+      {
+        clear_beacon_outstanding();
+      }
       prev_succeed_millis = millis();
 
       for (int i = 0; i < ANCHOR_NO; i++)
@@ -496,23 +808,24 @@ void loop()
         distance_storage[i] = ((uint16_t)data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
       }
 
-      Serial.print("T");
-      Serial.print(current_tag_id);
-      Serial.print(":");
-
-      for (int i = 0; i < ANCHOR_NO; i++)
+      if (should_print_final_report(current_tag_id))
       {
-        Serial.print(distance_storage[i]);
-        Serial.print(i == ANCHOR_NO - 1 ? "" : ",");
-      }
+        Serial.print("T");
+        Serial.print(current_tag_id);
+        Serial.print(":");
 
-      Serial.println();
-      if (current_tag_id < MAX_TAG_ID)
-      {
-        last_tag_print[current_tag_id] = millis();
+        for (int i = 0; i < ANCHOR_NO; i++)
+        {
+          Serial.print(distance_storage[i]);
+          Serial.print(i == ANCHOR_NO - 1 ? "" : ",");
+        }
+
+        Serial.println();
       }
 
       receiver();
+      noteActivity();
+      return;
     }
 
     if (data[16] != MY_ID)
@@ -524,6 +837,9 @@ void loop()
 
     if (msgId == POLL)
     {
+      update_tag_status(data[17], MY_ID);
+      prev_succeed_millis = millis();
+
       tpr = DW1000Ng::getReceiveTimestamp();
       expectedMsgId = RANGE;
       transmitPollAck();

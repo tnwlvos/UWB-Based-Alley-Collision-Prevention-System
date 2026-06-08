@@ -6,7 +6,7 @@
 */
 
 #include "setting.h"
-#define MAX_TAG_ID 30
+#define MAX_TAG_ID 256
 #define ANCHOR_NO 4
 
 #define USE_PA_LNA
@@ -38,6 +38,7 @@ const uint32_t PRINT_INTERVAL = 100; // 출력 간격 (0.2초)
 #define TAG_REQUEST 7
 #define TAG_RESPONSE 8
 #define ANCHOR_TAG_REPORT 9
+#define DELEGATED_FINAL_REPORT 11
 
 volatile byte expectedMsgId = POLL;
 volatile boolean sentAck = false;
@@ -89,7 +90,6 @@ void resetInactive()
 
 void transmitPollAck()
 {
-  Serial.println("TRANSMIT POLL ACK");
   data[0] = POLL_ACK;
   DW1000Ng::forceTRxOff();
   DW1000Ng::setTransmitData(data, LEN_DATA);
@@ -126,9 +126,6 @@ void setup()
     heard_tag_report_millis[i] = 0;
   }
 
-  Serial.print("ANCHOR START - ID: ");
-  Serial.println(MY_ID);
-
   DW1000Ng::initialize(PIN_SS, PIN_IRQ, PIN_RST);
   DW1000Ng::applyConfiguration(DEFAULT_CONFIG);
   DW1000Ng::applyInterruptConfiguration(DEFAULT_INTERRUPT_CONFIG);
@@ -143,7 +140,6 @@ void setup()
 
 void send_beacon(int id)
 {
-  Serial.println("BEACON");
   data[0] = BEACON;
   data[1] = id;
   data[16] = MY_ID;
@@ -157,6 +153,18 @@ void transmitAnchorTagReport(byte tagId)
 {
   data[0] = ANCHOR_TAG_REPORT;
   data[1] = MY_ID;
+  data[16] = 0;
+  data[17] = tagId;
+
+  DW1000Ng::forceTRxOff();
+  DW1000Ng::setTransmitData(data, LEN_DATA);
+  DW1000Ng::startTransmit();
+}
+
+void transmitDelegatedFinalReport(byte tagId)
+{
+  data[0] = DELEGATED_FINAL_REPORT;
+  data[15] = MY_ID;
   data[16] = 0;
   data[17] = tagId;
 
@@ -235,27 +243,21 @@ void loop()
   if (sentAck)
   {
     sentAck = false;
-    Serial.println("SEND OK");
     if (data[0] == POLL_ACK) tpas = DW1000Ng::getTransmitTimestamp();
     DW1000Ng::startReceive();
   }
 
   if (receivedAck)
   {
-    Serial.println("RECEIVED");
     receivedAck = false;
     DW1000Ng::getReceivedData(data, LEN_DATA);
     byte msgId = data[0];
     byte current_tag_id = data[17];
 
-    if (msgId == TAG_RESPONSE)
+    if (msgId == TAG_RESPONSE && data[16] == MY_ID)
     {
       if (update_heard_tag_status(current_tag_id))
       {
-        Serial.print("HEARD TAG FROM A");
-        Serial.print(MY_ID);
-        Serial.print(" : ");
-        Serial.println(current_tag_id);
         transmitAnchorTagReport(current_tag_id);
         noteActivity();
         return;
@@ -268,7 +270,6 @@ void loop()
 
     if (msgId == POLL)
     {
-      Serial.println("RECEIVED POLL");
       for (int i = 0; i < ANCHOR_NO; i++)
       {
         distance_storage[i] = ((uint16_t)data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
@@ -277,34 +278,13 @@ void loop()
 
     if ( msgId == FINAL_REPORT )
     {
-
-      for (int i = 0; i < ANCHOR_NO; i++)
-      {
-        distance_storage[i] = ((uint16_t)data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
-      }
-
-      Serial.print("T"); Serial.print(current_tag_id); Serial.print(":");
-      for (int i = 0; i < ANCHOR_NO; i++)
-      {
-        Serial.print(distance_storage[i]);
-        Serial.print(i == ANCHOR_NO - 1 ? "" : ",");
-      }
-      Serial.println();
-      if (current_tag_id < MAX_TAG_ID)
-      {
-        last_tag_print[current_tag_id] = millis();
-      }
-
       receiver();
+      noteActivity();
+      return;
     }
-
-    Serial.print("ID = ");
-    Serial.println(data[16]);
-    Serial.println(msgId);
 
     if (data[16] != MY_ID)
     {
-      Serial.println("Not My Msg");
       resetInactive();
       receiver();
       return;
@@ -318,7 +298,6 @@ void loop()
     }
     else if (msgId == RANGE)
     {
-      Serial.println("RANGE");
       trr = DW1000Ng::getReceiveTimestamp();
       expectedMsgId = POLL;
       tps = DW1000NgUtils::bytesAsValue(data + 1, LENGTH_TIMESTAMP);

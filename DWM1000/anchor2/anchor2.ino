@@ -6,7 +6,7 @@
 */
 
 #include "setting.h"
-#define MAX_TAG_ID 30
+#define MAX_TAG_ID 256
 #define ANCHOR_NO 4
 
 #define USE_PA_LNA
@@ -22,14 +22,24 @@ uint16_t all_tags_dist[MAX_TAG_ID];
 int heard_tag_list[10];
 unsigned long heard_tag_millis[10];
 unsigned long heard_tag_report_millis[10];
-bool pending_tag_request_relay = false;
-unsigned long tag_request_relay_millis = 0;
 int delegated_tag_id = -1;
 unsigned long delegated_tag_millis = 0;
+bool a2_discovery_active = false;
+bool a2_discovery_found_any = false;
+unsigned long a2_discovery_start_millis = 0;
+unsigned long a2_discovery_end_millis = 0;
+byte a2_discovered_tags[8];
+byte a2_discovered_tag_count = 0;
+byte a2_passive_tags[8];
+unsigned long a2_passive_tag_millis[8];
+byte a2_passive_tag_count = 0;
 
 /* 태그별 출력 안정화를 위한 변수 */
 uint32_t last_tag_print[MAX_TAG_ID];
 const uint32_t HEARD_TAG_REPORT_INTERVAL = 1000;
+const uint32_t A2_DISCOVERY_MAX_MS = 100;
+const uint32_t A2_DISCOVERY_COLLECT_AFTER_FIRST_MS = 35;
+const uint32_t A2_PASSIVE_TAG_TTL = 500;
 const uint32_t PRINT_INTERVAL = 100; // 출력 간격 (0.2초)
 
 #define POLL 0
@@ -44,6 +54,9 @@ const uint32_t PRINT_INTERVAL = 100; // 출력 간격 (0.2초)
 #define ANCHOR_TAG_REPORT 9
 #define BEACON_DELEGATE 10
 #define DELEGATED_FINAL_REPORT 11
+#define A2_DISCOVERY_GO 12
+#define A2_DISCOVERY_REPORT 13
+#define A2_DISCOVERY_EMPTY 14
 
 volatile byte expectedMsgId = POLL;
 volatile boolean sentAck = false;
@@ -95,7 +108,6 @@ void resetInactive()
 
 void transmitPollAck()
 {
-  Serial.println("TRANSMIT POLL ACK");
   data[0] = POLL_ACK;
   DW1000Ng::forceTRxOff();
   DW1000Ng::setTransmitData(data, LEN_DATA);
@@ -132,8 +144,11 @@ void setup()
     heard_tag_report_millis[i] = 0;
   }
 
-  Serial.print("ANCHOR START - ID: ");
-  Serial.println(MY_ID);
+  for (int i = 0; i < 8; i++)
+  {
+    a2_passive_tags[i] = 0;
+    a2_passive_tag_millis[i] = 0;
+  }
 
   DW1000Ng::initialize(PIN_SS, PIN_IRQ, PIN_RST);
   DW1000Ng::applyConfiguration(DEFAULT_CONFIG);
@@ -149,7 +164,6 @@ void setup()
 
 void send_beacon(int id)
 {
-  Serial.println("BEACON");
   data[0] = BEACON;
   data[1] = id;
   data[16] = MY_ID;
@@ -171,16 +185,8 @@ void transmitAnchorTagReport(byte tagId)
   DW1000Ng::startTransmit();
 }
 
-void scheduleTagRequestRelay()
-{
-  pending_tag_request_relay = true;
-  tag_request_relay_millis = millis() + 60;
-}
-
 void transmitTagRequestRelay()
 {
-  Serial.println("RELAY TAG REQUEST FROM A2");
-
   data[0] = TAG_REQUEST;
   data[16] = MY_ID;
   data[17] = 0;
@@ -200,6 +206,130 @@ void transmitDelegatedFinalReport(byte tagId)
   DW1000Ng::forceTRxOff();
   DW1000Ng::setTransmitData(data, LEN_DATA);
   DW1000Ng::startTransmit();
+}
+
+void transmitA2DiscoveryReport()
+{
+  data[0] = A2_DISCOVERY_REPORT;
+  data[1] = MY_ID;
+  data[2] = a2_discovered_tag_count;
+  for (byte i = 0; i < a2_discovered_tag_count && i < 8; i++)
+  {
+    data[3 + i] = a2_discovered_tags[i];
+  }
+  data[16] = 0;
+  data[17] = 0;
+
+  DW1000Ng::forceTRxOff();
+  DW1000Ng::setTransmitData(data, LEN_DATA);
+  DW1000Ng::startTransmit();
+}
+
+void transmitA2DiscoveryEmpty()
+{
+  data[0] = A2_DISCOVERY_EMPTY;
+  data[1] = MY_ID;
+  data[2] = 0;
+  data[16] = 0;
+  data[17] = 0;
+
+  DW1000Ng::forceTRxOff();
+  DW1000Ng::setTransmitData(data, LEN_DATA);
+  DW1000Ng::startTransmit();
+}
+
+bool isDelegatedBeaconActive()
+{
+  return delegated_tag_id >= 0 && millis() - delegated_tag_millis < 3000;
+}
+
+void cancelA2Discovery()
+{
+  a2_discovery_active = false;
+}
+
+void startA2Discovery()
+{
+  a2_discovery_active = true;
+  a2_discovery_found_any = false;
+  a2_discovered_tag_count = 0;
+  a2_discovery_start_millis = millis();
+  a2_discovery_end_millis = a2_discovery_start_millis + A2_DISCOVERY_MAX_MS;
+
+  for (byte i = 0; i < a2_passive_tag_count; i++)
+  {
+    if (millis() - a2_passive_tag_millis[i] <= A2_PASSIVE_TAG_TTL && !hasDiscoveredTag(a2_passive_tags[i]))
+    {
+      a2_discovered_tags[a2_discovered_tag_count++] = a2_passive_tags[i];
+    }
+  }
+
+  a2_passive_tag_count = 0;
+  transmitTagRequestRelay();
+}
+
+bool hasDiscoveredTag(byte tagId)
+{
+  for (byte i = 0; i < a2_discovered_tag_count; i++)
+  {
+    if (a2_discovered_tags[i] == tagId)
+    {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void collectPassiveTag(byte tagId)
+{
+  for (byte i = 0; i < a2_passive_tag_count; i++)
+  {
+    if (a2_passive_tags[i] == tagId)
+    {
+      a2_passive_tag_millis[i] = millis();
+      return;
+    }
+  }
+
+  if (a2_passive_tag_count < 8)
+  {
+    a2_passive_tags[a2_passive_tag_count] = tagId;
+    a2_passive_tag_millis[a2_passive_tag_count] = millis();
+    a2_passive_tag_count++;
+  }
+}
+
+void collectDiscoveredTag(byte tagId)
+{
+  if (!hasDiscoveredTag(tagId) && a2_discovered_tag_count < 8)
+  {
+    a2_discovered_tags[a2_discovered_tag_count++] = tagId;
+  }
+
+  if (!a2_discovery_found_any)
+  {
+    a2_discovery_found_any = true;
+    unsigned long max_end_millis = a2_discovery_start_millis + A2_DISCOVERY_MAX_MS;
+    unsigned long collect_end_millis = millis() + A2_DISCOVERY_COLLECT_AFTER_FIRST_MS;
+    a2_discovery_end_millis = collect_end_millis < max_end_millis ? collect_end_millis : max_end_millis;
+  }
+}
+
+void finishA2Discovery()
+{
+  a2_discovery_active = false;
+  if (a2_discovered_tag_count > 0)
+  {
+    transmitA2DiscoveryReport();
+  }
+  else
+  {
+    transmitA2DiscoveryEmpty();
+  }
+
+  a2_discovery_found_any = false;
+  a2_discovered_tag_count = 0;
 }
 
 bool update_heard_tag_status(int tag_id)
@@ -263,10 +393,9 @@ void loop()
 
   if ((millis() - prev_succeed_millis) > 10000) ESP.restart();
 
-  if (pending_tag_request_relay && !sentAck && !receivedAck && millis() >= tag_request_relay_millis)
+  if (a2_discovery_active && !sentAck && !receivedAck && millis() >= a2_discovery_end_millis)
   {
-    pending_tag_request_relay = false;
-    transmitTagRequestRelay();
+    finishA2Discovery();
     noteActivity();
     return;
   }
@@ -280,24 +409,27 @@ void loop()
   if (sentAck)
   {
     sentAck = false;
-    Serial.println("SEND OK");
     if (data[0] == POLL_ACK) tpas = DW1000Ng::getTransmitTimestamp();
     DW1000Ng::startReceive();
   }
 
   if (receivedAck)
   {
-    Serial.println("RECEIVED");
     receivedAck = false;
     DW1000Ng::getReceivedData(data, LEN_DATA);
     byte msgId = data[0];
     byte current_tag_id = data[17];
 
+    if (msgId == A2_DISCOVERY_GO && data[16] == MY_ID)
+    {
+      startA2Discovery();
+      noteActivity();
+      return;
+    }
+
     if (msgId == BEACON_DELEGATE && data[16] == MY_ID)
     {
-      Serial.print("DELEGATED BEACON TO TAG ");
-      Serial.println(data[1]);
-
+      cancelA2Discovery();
       delegated_tag_id = data[1];
       delegated_tag_millis = millis();
       send_beacon(data[1]);
@@ -305,23 +437,35 @@ void loop()
       return;
     }
 
-    if (msgId == TAG_REQUEST && data[16] == 0)
+    if (msgId == BEACON)
     {
-      scheduleTagRequestRelay();
+      cancelA2Discovery();
       receiver();
       noteActivity();
       return;
     }
 
-    if (msgId == TAG_RESPONSE)
+    if (msgId == TAG_REQUEST && data[16] == 0)
     {
-      if (update_heard_tag_status(current_tag_id))
+      receiver();
+      noteActivity();
+      return;
+    }
+
+    if (msgId == TAG_RESPONSE && data[16] == 0)
+    {
+      collectPassiveTag(current_tag_id);
+      receiver();
+      noteActivity();
+      return;
+    }
+
+    if (msgId == TAG_RESPONSE && data[16] == MY_ID)
+    {
+      if (a2_discovery_active)
       {
-        Serial.print("HEARD TAG FROM A");
-        Serial.print(MY_ID);
-        Serial.print(" : ");
-        Serial.println(current_tag_id);
-        transmitAnchorTagReport(current_tag_id);
+        collectDiscoveredTag(current_tag_id);
+        receiver();
         noteActivity();
         return;
       }
@@ -333,7 +477,7 @@ void loop()
 
     if (msgId == POLL)
     {
-      Serial.println("RECEIVED POLL");
+      cancelA2Discovery();
       for (int i = 0; i < ANCHOR_NO; i++)
       {
         distance_storage[i] = ((uint16_t)data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
@@ -342,7 +486,7 @@ void loop()
 
     if ( msgId == FINAL_REPORT )
     {
-
+      cancelA2Discovery();
       for (int i = 0; i < ANCHOR_NO; i++)
       {
         distance_storage[i] = ((uint16_t)data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
@@ -350,36 +494,19 @@ void loop()
 
       if (current_tag_id == delegated_tag_id && millis() - delegated_tag_millis < 3000)
       {
-        Serial.print("RELAY FINAL REPORT TO A0 : ");
-        Serial.println(current_tag_id);
         transmitDelegatedFinalReport(current_tag_id);
         delegated_tag_id = -1;
         noteActivity();
         return;
       }
 
-      Serial.print("T"); Serial.print(current_tag_id); Serial.print(":");
-      for (int i = 0; i < ANCHOR_NO; i++)
-      {
-        Serial.print(distance_storage[i]);
-        Serial.print(i == ANCHOR_NO - 1 ? "" : ",");
-      }
-      Serial.println();
-      if (current_tag_id < MAX_TAG_ID)
-      {
-        last_tag_print[current_tag_id] = millis();
-      }
-
       receiver();
+      noteActivity();
+      return;
     }
-
-    Serial.print("ID = ");
-    Serial.println(data[16]);
-    Serial.println(msgId);
 
     if (data[16] != MY_ID)
     {
-      Serial.println("Not My Msg");
       resetInactive();
       receiver();
       return;
@@ -393,7 +520,6 @@ void loop()
     }
     else if (msgId == RANGE)
     {
-      Serial.println("RANGE");
       trr = DW1000Ng::getReceiveTimestamp();
       expectedMsgId = POLL;
       tps = DW1000NgUtils::bytesAsValue(data + 1, LENGTH_TIMESTAMP);
