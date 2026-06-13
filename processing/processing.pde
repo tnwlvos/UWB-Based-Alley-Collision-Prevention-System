@@ -42,6 +42,8 @@ final int ROAD_SWITCH_CONFIRM_COUNT = 3;
 final float MAX_POSITION_JUMP_M = 8.0;
 final float MAX_POSITION_JUMP_BLEND = 0.25;
 final int LOST_GRACE_MS = 2500;
+final int ROAD_LOST_LOCK_COUNT = 2;
+final int TAG_SPEED_STALE_MS = 2500;
 
 final float A0_X = 560;
 final float A0_Y = 410;
@@ -119,11 +121,15 @@ class VehicleState {
   float[] calcDists = new float[4];
   float[] lastValidDists = new float[4];
   int[] lastValidDistMillis = new int[4];
+  int[] rawLostStreak = new int[4];
   KalmanFilter[] kfs = new KalmanFilter[4];
   PVector pos = new PVector();
   PVector drawPos = new PVector();
   PVector prevPos = new PVector();
   float speed = 0;
+  float tagSpeed = 0;
+  boolean tagSpeedValid = false;
+  int lastTagSpeedMillis = 0;
   ArrayList<Float> speedHistory = new ArrayList<Float>();
   int maxHistory = 1;
   boolean approaching = false;
@@ -145,7 +151,18 @@ class VehicleState {
       calcDists[i] = DIST_INVALID_M;
       lastValidDists[i] = DIST_INVALID_M;
       lastValidDistMillis[i] = 0;
+      rawLostStreak[i] = 0;
     }
+  }
+
+  void updateTagSpeed(float speedCentiKmh, boolean valid) {
+    tagSpeedValid = valid;
+    lastTagSpeedMillis = millis();
+    tagSpeed = valid ? speedCentiKmh / 100.0 : 0;
+  }
+
+  boolean hasFreshTagSpeed() {
+    return tagSpeedValid && millis() - lastTagSpeedMillis <= TAG_SPEED_STALE_MS;
   }
 
   void update(float d1, float d2, float d3, float d4) {
@@ -160,12 +177,15 @@ class VehicleState {
 
     for (int i = 0; i < 4; i++) {
       if (isValidDistance(rawDists[i])) {
+        rawLostStreak[i] = 0;
         lastValidDists[i] = rawDists[i];
         lastValidDistMillis[i] = now;
         calcDists[i] = rawDists[i];
       } else if (now - lastValidDistMillis[i] <= LOST_GRACE_MS) {
+        rawLostStreak[i]++;
         calcDists[i] = lastValidDists[i];
       } else {
+        rawLostStreak[i]++;
         calcDists[i] = DIST_INVALID_M;
       }
 
@@ -187,6 +207,9 @@ class VehicleState {
       road = "CENTER";
       pos.set(centerX, centerY);
       hasEnteredCenter = true;
+    } else if (shouldLockToLastRoadOnLoss(hasD0, hasD1, hasD2, hasD3)) {
+      road = lastRoad;
+      pos.set(projectForRoad(road, dists, hasD0, hasD1, hasD2, hasD3, prevPos));
     } else {
       PVector boxPos = estimateAnchorBoxPosition(dists, hasD0, hasD1, hasD2, hasD3);
 
@@ -319,6 +342,55 @@ class VehicleState {
     }
 
     return lastRoad;
+  }
+
+  boolean shouldLockToLastRoadOnLoss(boolean hasD0, boolean hasD1, boolean hasD2, boolean hasD3) {
+    if (!isRoadName(lastRoad)) {
+      return false;
+    }
+
+    int a = firstRoadAnchor(lastRoad);
+    int b = secondRoadAnchor(lastRoad);
+    if (a < 0 || b < 0) {
+      return false;
+    }
+
+    boolean requiredAnchorLost = rawLostStreak[a] >= ROAD_LOST_LOCK_COUNT ||
+      rawLostStreak[b] >= ROAD_LOST_LOCK_COUNT;
+    if (!requiredAnchorLost) {
+      return false;
+    }
+
+    return hasAnchorForLastRoad(hasD0, hasD1, hasD2, hasD3) || hasPos;
+  }
+
+  boolean hasAnchorForLastRoad(boolean hasD0, boolean hasD1, boolean hasD2, boolean hasD3) {
+    if (lastRoad.equals("A0-A3 ROAD")) return hasD0 || hasD3;
+    if (lastRoad.equals("A0-A1 ROAD")) return hasD0 || hasD1;
+    if (lastRoad.equals("A2-A3 ROAD")) return hasD2 || hasD3;
+    if (lastRoad.equals("A1-A2 ROAD")) return hasD1 || hasD2;
+    return false;
+  }
+
+  boolean isRoadName(String roadName) {
+    return roadName.equals("A0-A3 ROAD") || roadName.equals("A0-A1 ROAD") ||
+      roadName.equals("A2-A3 ROAD") || roadName.equals("A1-A2 ROAD");
+  }
+
+  int firstRoadAnchor(String roadName) {
+    if (roadName.equals("A0-A3 ROAD")) return 0;
+    if (roadName.equals("A0-A1 ROAD")) return 0;
+    if (roadName.equals("A2-A3 ROAD")) return 2;
+    if (roadName.equals("A1-A2 ROAD")) return 1;
+    return -1;
+  }
+
+  int secondRoadAnchor(String roadName) {
+    if (roadName.equals("A0-A3 ROAD")) return 3;
+    if (roadName.equals("A0-A1 ROAD")) return 1;
+    if (roadName.equals("A2-A3 ROAD")) return 3;
+    if (roadName.equals("A1-A2 ROAD")) return 2;
+    return -1;
   }
 }
 
@@ -474,6 +546,24 @@ PVector projectSingleAnchorRoad(int anchorId, float distanceM, String road) {
 }
 
 HashMap<String, VehicleState> vehicleMap = new HashMap<String, VehicleState>();
+HashMap<String, TagDiscoveryState> tagDiscoveryMap = new HashMap<String, TagDiscoveryState>();
+
+class TagDiscoveryState {
+  String tagId;
+  int anchorId;
+  int lastSeenMillis;
+
+  TagDiscoveryState(String tagId, int anchorId) {
+    this.tagId = tagId;
+    this.anchorId = anchorId;
+    this.lastSeenMillis = millis();
+  }
+
+  void update(int anchorId) {
+    this.anchorId = anchorId;
+    this.lastSeenMillis = millis();
+  }
+}
 
 void setup() {
   size(1500, 1050);
@@ -525,6 +615,7 @@ void draw() {
   handleBuzzer(anyVehicleSpeeding);
   popMatrix();
 
+  drawTagListPanel();
   drawTerminal();
 
   if (isConnected) {
@@ -583,7 +674,7 @@ void drawDashboard() {
   }
 
   float bX = 15;
-  float bY = height - 165;
+  float bY = height - 245;
   float bW = 170;
   float bH = 45;
 
@@ -598,7 +689,7 @@ void drawDashboard() {
   fill(isConnected ? 255 : 0);
   text(isConnected ? "DISCONNECT" : "CONNECT", bX + (bW/2.0), bY + (bH/2.0));
 
-  float buzzY = height - 105;
+  float buzzY = height - 185;
   if (buzzerActive) fill(255, 200, 0);
   else fill(45, 50, 65);
   rect(bX, buzzY, bW, bH, 8);
@@ -611,7 +702,7 @@ void drawDashboard() {
   textAlign(CENTER, CENTER);
   text("SYS.STATUS: " + connectionStatus, 100, bY - 20);
 
-  float copyY = height - 50;
+  float copyY = height - 130;
   fill(35, 40, 55);
   rect(bX, copyY, bW, 32, 6);
   fill(255);
@@ -651,6 +742,61 @@ void drawTerminal()
   }
 }
 
+void drawTagListPanel()
+{
+  float panelW = 260;
+  float panelH = 270;
+  float x = width - panelW - 20;
+  float y = 24;
+
+  fill(15, 18, 25, 225);
+  stroke(0, 255, 255, 80);
+  rectMode(CORNER);
+  rect(x, y, panelW, panelH, 8);
+
+  fill(0, 255, 255);
+  textAlign(LEFT, TOP);
+  textSize(16);
+  text("TAG LIST", x + 16, y + 16);
+
+  fill(160, 180, 190);
+  textSize(10);
+  text("ID", x + 18, y + 48);
+  text("FOUND BY", x + 92, y + 48);
+  text("AGE", x + 180, y + 48);
+
+  int now = millis();
+  int row = 0;
+
+  for (Map.Entry<String, TagDiscoveryState> entry : tagDiscoveryMap.entrySet()) {
+    TagDiscoveryState tag = entry.getValue();
+    int age = now - tag.lastSeenMillis;
+
+    float rowY = y + 68 + row * 34;
+    if (rowY > y + panelH - 26) {
+      break;
+    }
+
+    boolean fresh = age <= 3000;
+    fill(fresh ? color(0, 255, 180, 35) : color(255, 255, 255, 18));
+    noStroke();
+    rect(x + 12, rowY - 6, panelW - 24, 26, 5);
+
+    fill(fresh ? color(0, 255, 180) : color(170));
+    textSize(13);
+    text("T" + tag.tagId, x + 18, rowY);
+    text("A" + tag.anchorId, x + 100, rowY);
+    text(nf(age / 1000.0, 0, 1) + "s", x + 180, rowY);
+    row++;
+  }
+
+  if (row == 0) {
+    fill(130, 145, 155);
+    textSize(12);
+    text("NO ACTIVE TAGS", x + 18, y + 74);
+  }
+}
+
 void mousePressed() {
   for (int i = 0; i < min(portList.length, 15); i++) {
     if (mouseX > 10 && mouseX < 190 && mouseY > 60 + (i * 35) && mouseY < 88 + (i * 35)) {
@@ -658,7 +804,7 @@ void mousePressed() {
     }
   }
 
-  if (mouseX >= 15 && mouseX <= 185 && mouseY >= height - 165 && mouseY <= height - 120) {
+  if (mouseX >= 15 && mouseX <= 185 && mouseY >= height - 245 && mouseY <= height - 200) {
     if (!isConnected && selectedPortIndex != -1) {
       try {
         myPort = new Serial(this, portList[selectedPortIndex], 115200);
@@ -680,18 +826,19 @@ void mousePressed() {
       synchronized(terminalLines) {
         terminalLines.add("Disconnected.");
         vehicleMap.clear();
+        tagDiscoveryMap.clear();
       }
     }
   }
 
   // [수정] 누르고 있는 동안만 활성화
-  if (mouseX >= 15 && mouseX <= 185 && mouseY >= height - 105 && mouseY <= height - 60) {
+  if (mouseX >= 15 && mouseX <= 185 && mouseY >= height - 185 && mouseY <= height - 140) {
     if (isConnected) {
       buzzerActive = true;
     }
   }
 
-  if (mouseX >= 15 && mouseX <= 185 && mouseY >= height - 50 && mouseY <= height - 18) {
+  if (mouseX >= 15 && mouseX <= 185 && mouseY >= height - 130 && mouseY <= height - 98) {
     copyFullLogToClipboard();
   }
 }
@@ -738,16 +885,15 @@ void handleSerialLine(String inString) {
   }
 
   boolean isRangeLine = inString.matches("T\\d+:\\d+,\\d+,\\d+,\\d+");
-  if (!isRangeLine) {
-    return;
-  }
-
+  boolean isTagSpeedLine = inString.matches("S\\d+:(\\d+|INVALID)");
   int now = millis();
-  if (inString.equals(lastRangeLine) && now - lastRangeLineMillis < DUPLICATE_RANGE_SUPPRESS_MS) {
+  if (isRangeLine && inString.equals(lastRangeLine) && now - lastRangeLineMillis < DUPLICATE_RANGE_SUPPRESS_MS) {
     return;
   }
-  lastRangeLine = inString;
-  lastRangeLineMillis = now;
+  if (isRangeLine) {
+    lastRangeLine = inString;
+    lastRangeLineMillis = now;
+  }
 
   String timestamp = new SimpleDateFormat("HH:mm:ss.SSS").format(new Date());
   String logLine = timestamp + " " + inString;
@@ -766,6 +912,27 @@ void handleSerialLine(String inString) {
     logWriter.flush();
   }
 
+  updateTagListFromLine(inString);
+
+  if (isTagSpeedLine) {
+    String[] parts = split(inString, ':');
+    if (parts.length == 2) {
+      String id = "T" + parts[0].substring(1);
+      if (vehicleMap.containsKey(id)) {
+        if (parts[1].equals("INVALID")) {
+          vehicleMap.get(id).updateTagSpeed(0, false);
+        } else {
+          vehicleMap.get(id).updateTagSpeed(float(parts[1]), true);
+        }
+      }
+    }
+    return;
+  }
+
+  if (!isRangeLine) {
+    return;
+  }
+
   String[] parts = split(inString, ':');
   if (parts.length == 2) {
     String id = parts[0];
@@ -779,6 +946,63 @@ void handleSerialLine(String inString) {
         float(distStrs[3]) / 1000.0
         );
     }
+  }
+}
+
+void updateTagListFromLine(String inString)
+{
+  if (!inString.startsWith("TAG LIST")) {
+    return;
+  }
+
+  int colonIndex = inString.indexOf(':');
+  if (colonIndex < 0 || colonIndex >= inString.length() - 1) {
+    return;
+  }
+
+  String payload = trim(inString.substring(colonIndex + 1));
+  if (payload.length() == 0) {
+    tagDiscoveryMap.clear();
+    return;
+  }
+
+  String[] entries = split(payload, ',');
+  ArrayList<String> seenTags = new ArrayList<String>();
+
+  for (String entry : entries) {
+    String item = trim(entry);
+    if (item.length() == 0) {
+      continue;
+    }
+
+    int anchorStart = item.indexOf("(A");
+    int anchorEnd = item.indexOf(")", anchorStart);
+    if (anchorStart <= 0 || anchorEnd <= anchorStart + 2) {
+      continue;
+    }
+
+    String tagId = trim(item.substring(0, anchorStart));
+    int anchorId = int(trim(item.substring(anchorStart + 2, anchorEnd)));
+    if (tagId.length() == 0) {
+      continue;
+    }
+    seenTags.add(tagId);
+
+    if (!tagDiscoveryMap.containsKey(tagId)) {
+      tagDiscoveryMap.put(tagId, new TagDiscoveryState(tagId, anchorId));
+    } else {
+      tagDiscoveryMap.get(tagId).update(anchorId);
+    }
+  }
+
+  ArrayList<String> removedTags = new ArrayList<String>();
+  for (String tagId : tagDiscoveryMap.keySet()) {
+    if (!seenTags.contains(tagId)) {
+      removedTags.add(tagId);
+    }
+  }
+  for (String tagId : removedTags) {
+    tagDiscoveryMap.remove(tagId);
   }
 }
 
@@ -823,10 +1047,20 @@ void drawGlobalStatus() {
     if (!v.hasEnteredCenter && v.speed >= SPEED_LIMIT) fill(255, 45, 85);
     else fill(0, 255, 180);
     textSize(13);
-    text("SPEED: " + nf(v.speed, 0, 1) + " km/h", baseX + 20, yOff + 65);
+    text("CALC SPEED: " + nf(v.speed, 0, 1) + " km/h", baseX + 20, yOff + 65);
+    if (v.hasFreshTagSpeed()) fill(0, 240, 255);
+    else fill(150);
+    text("TAG SPEED: " + formatTagSpeed(v), baseX + 20, yOff + 83);
 
     i++;
   }
+}
+
+String formatTagSpeed(VehicleState v) {
+  if (!v.hasFreshTagSpeed()) {
+    return "-- km/h";
+  }
+  return nf(v.tagSpeed, 0, 2) + " km/h";
 }
 
 void drawVehicle(float x, float y, float spd, String id, color c, VehicleState v) {
@@ -840,9 +1074,11 @@ void drawVehicle(float x, float y, float spd, String id, color c, VehicleState v
   fill(255);
   textAlign(CENTER, CENTER);
   textSize(14);
-  text(id, x, y - 45);
-  textSize(16);
-  text(nf(spd, 0, 1) + " km/h", x, y - 25);
+  text(id, x, y - 58);
+  textSize(13);
+  text("CALC " + nf(spd, 0, 1) + " km/h", x, y - 38);
+  fill(v.hasFreshTagSpeed() ? color(0, 240, 255) : color(180));
+  text("TAG " + formatTagSpeed(v), x, y - 22);
 
   textSize(10);
   textAlign(LEFT, TOP);

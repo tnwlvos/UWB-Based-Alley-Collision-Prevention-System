@@ -43,7 +43,16 @@ volatile boolean receivedAck = false;
 uint64_t timePollSent, timePollAckReceived, timeRangeSent;
 
 #define LEN_DATA 20
+const uint8_t SPEED_RX_BUFFER_SIZE = 16;
+const uint32_t SPEED_STALE_MS = 1000;
 byte data[LEN_DATA];
+
+char speed_rx_buffer[SPEED_RX_BUFFER_SIZE];
+uint8_t speed_rx_index = 0;
+float current_gps_speed_kmh = 0.0;
+uint16_t current_gps_speed_centi_kmh = 0;
+uint32_t last_speed_update_millis = 0;
+bool gps_speed_valid = false;
 
 uint32_t lastActivity;
 uint32_t resetPeriod = 60;        // anchor timeout before retrying or moving to the next anchor
@@ -82,6 +91,87 @@ void handleReceived()
 void noteActivity()
 {
   lastActivity = millis();
+}
+
+void clearSpeedRxBuffer()
+{
+  speed_rx_index = 0;
+  speed_rx_buffer[0] = '\0';
+}
+
+void parseSpeedLine(char *line)
+{
+  if (line[0] == '\0')
+  {
+    return;
+  }
+
+  char *endPtr;
+  float parsedSpeed = strtof(line, &endPtr);
+
+  while (*endPtr == ' ' || *endPtr == '\t')
+  {
+    endPtr++;
+  }
+
+  if (endPtr == line || *endPtr != '\0' || parsedSpeed < 0.0 || parsedSpeed > 300.0)
+  {
+    return;
+  }
+
+  float speedCenti = parsedSpeed * 100.0 + 0.5;
+  if (speedCenti > 65535.0)
+  {
+    speedCenti = 65535.0;
+  }
+
+  current_gps_speed_kmh = parsedSpeed;
+  current_gps_speed_centi_kmh = (uint16_t)speedCenti;
+  last_speed_update_millis = millis();
+  gps_speed_valid = true;
+}
+
+void readSpeedSerialNonBlocking()
+{
+  while (Serial.available() > 0)
+  {
+    char c = (char)Serial.read();
+
+    if (c == '\n')
+    {
+      speed_rx_buffer[speed_rx_index] = '\0';
+      parseSpeedLine(speed_rx_buffer);
+      clearSpeedRxBuffer();
+    }
+    else if (c != '\r')
+    {
+      if (speed_rx_index < SPEED_RX_BUFFER_SIZE - 1)
+      {
+        speed_rx_buffer[speed_rx_index++] = c;
+      }
+      else
+      {
+        clearSpeedRxBuffer();
+      }
+    }
+  }
+
+  if (gps_speed_valid && millis() - last_speed_update_millis > SPEED_STALE_MS)
+  {
+    gps_speed_valid = false;
+    current_gps_speed_kmh = 0.0;
+    current_gps_speed_centi_kmh = 0;
+  }
+}
+
+uint16_t getCurrentSpeedForReport()
+{
+  if (!gps_speed_valid)
+  {
+    return 0;
+  }
+
+  return current_gps_speed_centi_kmh;
 }
 
 void transmitTagNo(byte requestAnchorId)
@@ -123,7 +213,13 @@ void transmitFinalReport()
     data[1 + i * 2 + 1] = distance_storage[i] & 0xFF;
   }
 
-  // Anchor0?먭쾶 蹂대궡??理쒖쥌 嫄곕━ 由ы룷??
+  
+  uint16_t speedCentiKmh = getCurrentSpeedForReport();
+  data[9] = speedCentiKmh >> 8;
+  data[10] = speedCentiKmh & 0xFF;
+  data[11] = gps_speed_valid ? 1 : 0;
+
+// Anchor0?먭쾶 蹂대궡??理쒖쥌 嫄곕━ 由ы룷??
   data[16] = 0;
   data[17] = MY_TAG_ID;
 
@@ -241,24 +337,6 @@ void receiver()
 
 void dwm1000_process()
 {
-  if (Serial.available())
-  {
-    int cmd = Serial.read();
-
-    if (cmd == '1')
-    {
-      current_target_id = 0;
-      anchor_retry_count = 0;
-      expectedMsgId = POLL_ACK;
-      ranging_in_progress = true;
-      resetDistanceStorage();
-
-      DW1000Ng::forceTRxOff();
-      transmitPoll();
-      noteActivity();
-    }
-  }
-
   if (sentAck)
   {
     sentAck = false;
@@ -415,6 +493,8 @@ void setup()
 
 void loop()
 {
+  readSpeedSerialNonBlocking();
+
   if (warning_millis > millis())
   {
     digitalWrite(26, (millis() / 500) % 2);

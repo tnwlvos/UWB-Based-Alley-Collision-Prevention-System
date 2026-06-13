@@ -808,6 +808,9 @@ void loop()
         distance_storage[i] = ((uint16_t)data[1 + i * 2] << 8) | data[1 + i * 2 + 1];
       }
 
+      uint16_t speedCentiKmh = ((uint16_t)data[9] << 8) | data[10];
+      bool speedValid = data[11] == 1;
+
       if (should_print_final_report(current_tag_id))
       {
         Serial.print("T");
@@ -821,6 +824,18 @@ void loop()
         }
 
         Serial.println();
+
+        Serial.print("S");
+        Serial.print(current_tag_id);
+        Serial.print(":");
+        if (speedValid)
+        {
+          Serial.println(speedCentiKmh);
+        }
+        else
+        {
+          Serial.println("INVALID");
+        }
       }
 
       receiver();
