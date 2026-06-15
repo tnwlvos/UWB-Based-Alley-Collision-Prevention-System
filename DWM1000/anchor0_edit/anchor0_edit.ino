@@ -20,7 +20,6 @@ int prev_active_tag_list[10];
 int prev_active_tag_heard_anchor[10];
 int last_reported_tag_id_by_anchor[4];
 unsigned long last_anchor_report_print_millis[4];
-uint8_t tag_final_timeout_count[MAX_TAG_ID];
 
 int id_index = 0;
 unsigned long prev_send_beacon_millis;
@@ -54,13 +53,12 @@ const uint32_t PRINT_INTERVAL = 100;
 const uint32_t DUPLICATE_REPORT_SUPPRESS_MS = 80;
 const uint32_t POST_FINAL_REPORT_GUARD_MS = 40;
 const uint32_t ANCHOR_REPORT_PRINT_INTERVAL = 1000;
-const uint32_t TAG_IDLE_TIMEOUT = 30000;
+const uint32_t TAG_IDLE_TIMEOUT = 10000;
 const uint32_t BEACON_SLOT_GUARD_MS = 500;
 const uint32_t TAG_REQUEST_INTERVAL_EMPTY = 300;
 const uint32_t TAG_REQUEST_INTERVAL_ACTIVE = 1500;
 const uint32_t A0_DIRECT_DISCOVERY_WAIT = 100;
 const uint32_t A0_A2_DISCOVERY_TIMEOUT = 150;
-const uint8_t FINAL_REPORT_MAX_TIMEOUTS = 3;
 
 #define POLL 0
 #define POLL_ACK 1
@@ -191,7 +189,6 @@ void setup()
 
   for (int i = 0; i < MAX_TAG_ID; i++)
   {
-    tag_final_timeout_count[i] = 0;
     last_tag_print[i] = 0;
     last_tag_report_hash[i] = 0;
     all_tags_dist[i] = DIST_INVALID;
@@ -296,10 +293,6 @@ void remove_idle_tag_list()
 
     if ((millis() - tag_millis[i]) > TAG_IDLE_TIMEOUT)
     {
-      if (tag_list[i] >= 0 && tag_list[i] < MAX_TAG_ID)
-      {
-        tag_final_timeout_count[tag_list[i]] = 0;
-      }
       tag_list[i] = -1;
       tag_millis[i] = 0;
       tag_distance_millis[i] = 0;
@@ -404,10 +397,6 @@ bool update_tag_status(int tag_id, int heard_anchor_id)
         tag_millis[j] = millis();
         tag_distance_millis[j] = millis();
         tag_heard_anchor[j] = heard_anchor_id;
-        if (tag_id >= 0 && tag_id < MAX_TAG_ID)
-        {
-          tag_final_timeout_count[tag_id] = 0;
-        }
         flag2 = true;
         break;
       }
@@ -424,11 +413,6 @@ bool update_tag_status(int tag_id, int heard_anchor_id)
 
 void mark_tag_distance_received(int tag_id)
 {
-  if (tag_id >= 0 && tag_id < MAX_TAG_ID)
-  {
-    tag_final_timeout_count[tag_id] = 0;
-  }
-
   for (int i = 0; i < 10; i++)
   {
     if (tag_list[i] == tag_id)
@@ -451,25 +435,6 @@ void clear_beacon_outstanding()
   beacon_outstanding = false;
   outstanding_tag_id = -1;
   beacon_sent_millis = 0;
-}
-
-void remove_tag_by_id(int tag_id)
-{
-  for (int i = 0; i < 10; i++)
-  {
-    if (tag_list[i] == tag_id)
-    {
-      tag_list[i] = -1;
-      tag_millis[i] = 0;
-      tag_distance_millis[i] = 0;
-      tag_heard_anchor[i] = -1;
-    }
-  }
-
-  if (tag_id >= 0 && tag_id < MAX_TAG_ID)
-  {
-    tag_final_timeout_count[tag_id] = 0;
-  }
 }
 
 void finish_a0_discovery_if_needed()
@@ -550,17 +515,8 @@ void handle_beacon_slot_timeout()
     return;
   }
 
-  if (outstanding_tag_id >= 0 && outstanding_tag_id < MAX_TAG_ID)
-  {
-    tag_final_timeout_count[outstanding_tag_id]++;
-
-    if (tag_final_timeout_count[outstanding_tag_id] >= FINAL_REPORT_MAX_TIMEOUTS)
-    {
-      remove_tag_by_id(outstanding_tag_id);
-      update_active_tag_list();
-      if (id_index > active_tag_count) id_index = 0;
-    }
-  }
+  // Keep the tag in the active list through short vehicle-body/RF dropouts.
+  // Actual removal is handled by TAG_IDLE_TIMEOUT in remove_idle_tag_list().
 
   prev_succeed_millis = millis();
   clear_beacon_outstanding();

@@ -34,7 +34,10 @@ final float A0_A1_ROAD_LEN_M = 15.1; // road length from A0-A1 anchor line
 final float A0_A3_ROAD_LEN_M = 38.0; // road length from A0-A3 anchor line
 final float ROAD_SWITCH_MARGIN_M = 1.0;
 final int VEHICLE_HOLD_MS = 8000;
-final float POSITION_SMOOTHING = 0.75;
+final float POSITION_SMOOTHING = 0.18;
+final int POSITION_PREDICT_MAX_MS = 450;
+final float POSITION_PREDICT_MIN_SPEED_KMH = 2.0;
+final float POSITION_PREDICT_VELOCITY_BLEND = 0.35;
 final float DIST_INVALID_M = 65.535;
 final int DUPLICATE_RANGE_SUPPRESS_MS = 80;
 final float ROAD_SWITCH_CONFIDENCE_M = 1.5;
@@ -126,6 +129,7 @@ class VehicleState {
   PVector pos = new PVector();
   PVector drawPos = new PVector();
   PVector prevPos = new PVector();
+  PVector predictVelocity = new PVector();
   float speed = 0;
   float tagSpeed = 0;
   boolean tagSpeedValid = false;
@@ -242,12 +246,7 @@ class VehicleState {
       lastRoad = road;
     }
 
-    if (!hasDrawPos) {
-      drawPos.set(pos.x, pos.y);
-      hasDrawPos = true;
-    } else if (!road.equals("PARTIAL")) {
-      drawPos.lerp(pos, POSITION_SMOOTHING);
-    }
+    updatePredictionVelocity(hadPos, dt);
 
     if (hadPos && dt > 0) {
       float distanceMoved = dist(pos.x, pos.y, prevPos.x, prevPos.y) / MAP_SCALE;
@@ -264,6 +263,73 @@ class VehicleState {
     float curD = dist(pos.x, pos.y, centerX, centerY) / MAP_SCALE;
     float preD = (dist(prevPos.x, prevPos.y, centerX, centerY)) / MAP_SCALE;
     approaching = (curD < preD + 0.05);
+  }
+
+  void updatePredictionVelocity(boolean hadPos, float dt) {
+    if (!hadPos || dt <= 0 || road.equals("PARTIAL") || road.equals("CENTER")) {
+      predictVelocity.set(0, 0);
+      return;
+    }
+
+    PVector axis = roadAxis(road);
+    if (axis == null) {
+      predictVelocity.set(0, 0);
+      return;
+    }
+
+    float axisDelta = PVector.sub(pos, prevPos).dot(axis);
+    float directionSign = axisDelta >= 0 ? 1.0 : -1.0;
+    if (abs(axisDelta) < 0.5 && predictVelocity.mag() > 0.5) {
+      directionSign = predictVelocity.dot(axis) >= 0 ? 1.0 : -1.0;
+    }
+
+    PVector direction = PVector.mult(axis, directionSign);
+    PVector nextVelocity = new PVector();
+    if (hasFreshTagSpeed() && tagSpeed >= POSITION_PREDICT_MIN_SPEED_KMH) {
+      float tagSpeedPxPerSec = (tagSpeed / 3.6) * MAP_SCALE;
+      nextVelocity.set(direction.x * tagSpeedPxPerSec, direction.y * tagSpeedPxPerSec);
+    } else {
+      float measuredPxPerSec = abs(axisDelta) / dt;
+      nextVelocity.set(direction.x * measuredPxPerSec, direction.y * measuredPxPerSec);
+    }
+
+    predictVelocity.lerp(nextVelocity, POSITION_PREDICT_VELOCITY_BLEND);
+  }
+
+  PVector roadAxis(String roadName) {
+    if (roadName.equals("A0-A3 ROAD") || roadName.equals("A1-A2 ROAD")) {
+      return new PVector(1, 0);
+    }
+    if (roadName.equals("A0-A1 ROAD") || roadName.equals("A2-A3 ROAD")) {
+      return new PVector(0, 1);
+    }
+    if (roadName.equals("ANCHOR BOX")) {
+      PVector direction = PVector.sub(pos, prevPos);
+      if (direction.mag() < 0.5) {
+        return null;
+      }
+      direction.normalize();
+      return direction;
+    }
+    return null;
+  }
+
+  void updateDrawPosition() {
+    if (!hasPos) {
+      return;
+    }
+
+    if (!hasDrawPos) {
+      drawPos.set(pos.x, pos.y);
+      hasDrawPos = true;
+      return;
+    }
+
+    if (!road.equals("PARTIAL")) {
+      float predictSec = constrain(millis() - lastTime, 0, POSITION_PREDICT_MAX_MS) / 1000.0;
+      PVector targetPos = PVector.add(pos, PVector.mult(predictVelocity, predictSec));
+      drawPos.lerp(targetPos, POSITION_SMOOTHING);
+    }
   }
 
   String chooseClosestRoad(boolean hasD0, boolean hasD1, boolean hasD2, boolean hasD3) {
@@ -599,6 +665,7 @@ void draw() {
     VehicleState v = it.next().getValue();
     if (millis() - v.lastTime > VEHICLE_HOLD_MS) it.remove();
     else {
+      v.updateDrawPosition();
       v.displayOrder = idx;
       color vColor = (v.hasEnteredCenter) ? color(0, 255, 180) : (v.speed >= SPEED_LIMIT ? color(255, 45, 85) : color(0, 240, 255));
       drawVehicle(v.drawPos.x, v.drawPos.y, v.speed, v.id, vColor, v);

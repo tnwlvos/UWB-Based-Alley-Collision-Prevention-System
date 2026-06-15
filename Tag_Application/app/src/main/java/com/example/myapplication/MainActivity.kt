@@ -52,6 +52,10 @@ import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import java.io.IOException
+import java.util.Locale
+import kotlinx.coroutines.delay
+
+private const val SPEED_RESEND_INTERVAL_MS = 100L
 
 class MainActivity : ComponentActivity() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -186,6 +190,7 @@ fun MainScreen(
     val context = LocalContext.current
     var isGpsEnabled by remember { mutableStateOf(false) }
     var currentSpeed by remember { mutableFloatStateOf(0f) }
+    var lastSpeedUpdateMillis by remember { mutableStateOf(0L) }
     var usbStatus by remember { mutableStateOf("USB Not Connected") }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -215,9 +220,18 @@ fun MainScreen(
                 for (location in locationResult.locations) {
                     val speedKmH = location.speed * 3.6f
                     currentSpeed = speedKmH
-                    onSpeedUpdate("%.2f\n".format(speedKmH)) // Sending raw speed value to USB
+                    lastSpeedUpdateMillis = System.currentTimeMillis()
                 }
             }
+        }
+    }
+
+    LaunchedEffect(isGpsEnabled) {
+        while (isGpsEnabled) {
+            if (lastSpeedUpdateMillis > 0L) {
+                onSpeedUpdate(String.format(Locale.US, "%.2f\n", currentSpeed))
+            }
+            delay(SPEED_RESEND_INTERVAL_MS)
         }
     }
 
