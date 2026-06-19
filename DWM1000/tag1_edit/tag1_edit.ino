@@ -266,6 +266,16 @@ void transmitRange()
 }
 
 unsigned long warning_millis = 0;
+byte warning_level = 0;
+
+void applyRiskLevel(byte level)
+{
+  if (level > 2) level = 2;
+  warning_level = level;
+  warning_millis = level == 0 ? 0 : millis() + 1500;
+  Serial.print("RISK,");
+  Serial.println(warning_level);
+}
 
 void resetDistanceStorage()
 {
@@ -358,6 +368,7 @@ void dwm1000_process()
     {
       if (data[1] == MY_TAG_ID)
       {
+        applyRiskLevel(data[2]);
         if (!ranging_in_progress)
         {
           current_target_id = 0;
@@ -387,7 +398,10 @@ void dwm1000_process()
 
     if (data[0] == WARNING)
     {
-      warning_millis = millis() + 500;
+      if (data[1] == MY_TAG_ID || data[17] == MY_TAG_ID || data[1] == 255)
+      {
+        applyRiskLevel(data[2]);
+      }
       noteActivity();
       receiver();
       return;
@@ -495,7 +509,11 @@ void loop()
 {
   readSpeedSerialNonBlocking();
 
-  if (warning_millis > millis())
+  if (warning_level == 2 && warning_millis > millis())
+  {
+    digitalWrite(26, (millis() / 120) % 2);
+  }
+  else if (warning_level == 1 && warning_millis > millis())
   {
     digitalWrite(26, (millis() / 500) % 2);
   }

@@ -20,6 +20,10 @@ int prev_active_tag_list[10];
 int prev_active_tag_heard_anchor[10];
 int last_reported_tag_id_by_anchor[4];
 unsigned long last_anchor_report_print_millis[4];
+byte tag_risk_level[MAX_TAG_ID];
+bool pending_risk_notify[MAX_TAG_ID];
+char serial_line_buffer[32];
+byte serial_line_index = 0;
 
 int id_index = 0;
 unsigned long prev_send_beacon_millis;
@@ -132,6 +136,23 @@ void resetInactive()
 void transmitWarning()
 {
   data[0] = WARNING;
+  data[1] = 255;
+  data[2] = 2;
+  data[16] = MY_ID;
+  data[17] = 255;
+  DW1000Ng::forceTRxOff();
+  DW1000Ng::setTransmitData(data, LEN_DATA);
+  DW1000Ng::startTransmit();
+}
+
+void transmitRiskNotify(byte tag_id)
+{
+  data[0] = WARNING;
+  data[1] = tag_id;
+  data[2] = tag_risk_level[tag_id];
+  data[16] = MY_ID;
+  data[17] = tag_id;
+
   DW1000Ng::forceTRxOff();
   DW1000Ng::setTransmitData(data, LEN_DATA);
   DW1000Ng::startTransmit();
@@ -192,6 +213,8 @@ void setup()
     last_tag_print[i] = 0;
     last_tag_report_hash[i] = 0;
     all_tags_dist[i] = DIST_INVALID;
+    tag_risk_level[i] = 0;
+    pending_risk_notify[i] = false;
   }
 
   DW1000Ng::initialize(PIN_SS, PIN_IRQ, PIN_RST);
@@ -211,6 +234,7 @@ void send_beacon(int id)
 {
   data[0] = BEACON;
   data[1] = id;
+  data[2] = id < MAX_TAG_ID ? tag_risk_level[id] : 0;
   data[16] = MY_ID;
   data[17] = id;
 
@@ -223,6 +247,7 @@ void send_beacon_delegate(int delegate_anchor_id, int tag_id)
 {
   data[0] = BEACON_DELEGATE;
   data[1] = tag_id;
+  data[2] = tag_id < MAX_TAG_ID ? tag_risk_level[tag_id] : 0;
   data[16] = delegate_anchor_id;
   data[17] = tag_id;
 
@@ -522,6 +547,115 @@ void handle_beacon_slot_timeout()
   clear_beacon_outstanding();
 }
 
+void handle_risk_command(char *line)
+{
+  if (line[0] != 'R' || line[1] != ',')
+  {
+    return;
+  }
+
+  char *tagPart = line + 2;
+  char *levelPart = strchr(tagPart, ',');
+  if (levelPart == NULL)
+  {
+    return;
+  }
+
+  *levelPart = '\0';
+  levelPart++;
+
+  int tagId = atoi(tagPart);
+  int level = atoi(levelPart);
+  if (tagId < 0 || tagId >= MAX_TAG_ID)
+  {
+    return;
+  }
+
+  if (level < 0) level = 0;
+  if (level > 2) level = 2;
+
+  if (tag_risk_level[tagId] != (byte)level)
+  {
+    tag_risk_level[tagId] = (byte)level;
+    pending_risk_notify[tagId] = true;
+  }
+}
+
+void handle_serial_byte(char cmd)
+{
+  if (cmd == '1')
+  {
+    transmitWarning();
+    digitalWrite(27, HIGH);
+    return;
+  }
+
+  if (cmd == '0')
+  {
+    digitalWrite(27, LOW);
+    return;
+  }
+
+  if (cmd == '2')
+  {
+    if (!beacon_outstanding && !is_discovery_busy())
+    {
+      start_a0_discovery();
+    }
+  }
+}
+
+void handle_serial_commands()
+{
+  while (Serial.available())
+  {
+    char c = (char)Serial.read();
+    if (c == '\r')
+    {
+      continue;
+    }
+
+    if (c == '\n')
+    {
+      serial_line_buffer[serial_line_index] = '\0';
+      if (serial_line_index > 0)
+      {
+        handle_risk_command(serial_line_buffer);
+      }
+      serial_line_index = 0;
+      return;
+    }
+
+    if (serial_line_index == 0 && (c == '1' || c == '0' || c == '2'))
+    {
+      handle_serial_byte(c);
+      return;
+    }
+
+    if (serial_line_index < sizeof(serial_line_buffer) - 1)
+    {
+      serial_line_buffer[serial_line_index++] = c;
+    }
+    else
+    {
+      serial_line_index = 0;
+    }
+  }
+}
+
+int next_pending_risk_tag()
+{
+  for (int i = 0; i < MAX_TAG_ID; i++)
+  {
+    if (pending_risk_notify[i])
+    {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
 bool should_print_anchor_tag_report(byte reporter_anchor_id, int tag_id)
 {
   if (reporter_anchor_id >= ANCHOR_NO)
@@ -599,29 +733,7 @@ bool should_print_final_report(byte tag_id)
 
 void loop()
 {
-  if (Serial.available())
-  {
-    int cmd = Serial.read();
-
-    if (cmd == '1')
-    {
-      transmitWarning();
-      digitalWrite(27, HIGH);
-    }
-
-    if (cmd == '0')
-    {
-      digitalWrite(27, LOW);
-    }
-
-    if (cmd == '2')
-    {
-      if (!beacon_outstanding && !is_discovery_busy())
-      {
-        start_a0_discovery();
-      }
-    }
-  }
+  handle_serial_commands();
 
   if (MY_ID == 0)
   {
@@ -630,6 +742,18 @@ void loop()
       handle_beacon_slot_timeout();
       finish_a0_discovery_if_needed();
       handle_a2_discovery_timeout();
+
+      if (!beacon_outstanding && !is_discovery_busy() && !is_post_final_report_guard_active())
+      {
+        int riskTag = next_pending_risk_tag();
+        if (riskTag >= 0)
+        {
+          pending_risk_notify[riskTag] = false;
+          transmitRiskNotify((byte)riskTag);
+          prev_send_beacon_millis = millis();
+          return;
+        }
+      }
 
       if (!beacon_outstanding && !is_discovery_busy() && !is_post_final_report_guard_active() &&
           (millis() - prev_send_beacon_millis) > PRINT_INTERVAL)

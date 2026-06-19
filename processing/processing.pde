@@ -1,10 +1,3 @@
-/**
- * DWM1000 Monitor (Cyberpunk UI Version)
- * Version: 11.8
- * 주요 공지: 부저 버튼을 토글 방식에서 누르고 있는 동안만 전송되는 방식으로 변경.
- * 스타일: Processing Java 스타일 유지
- */
-
 import processing.serial.*;
 import processing.sound.*;
 import java.util.HashMap;
@@ -47,6 +40,11 @@ final float MAX_POSITION_JUMP_BLEND = 0.25;
 final int LOST_GRACE_MS = 2500;
 final int ROAD_LOST_LOCK_COUNT = 2;
 final int TAG_SPEED_STALE_MS = 2500;
+final float COLLISION_TIME_WINDOW_SEC = 2.5;
+final float FAST_SPEED_THRESHOLD_MPS = 4.0;
+final int RISK_NONE = 0;
+final int RISK_COLLISION_SLOW = 1;
+final int RISK_COLLISION_FAST = 2;
 
 final float A0_X = 560;
 final float A0_Y = 410;
@@ -57,18 +55,18 @@ final float A3_Y = A0_Y + A0_A3_WIDTH_M * MAP_SCALE;
 final float A2_X = A1_X;
 final float A2_Y = A3_Y;
 
-/* 시리얼 연결 관련 변수 */
+/* ?쒕━???곌껐 愿??蹂??*/
 String[] portList;
 int selectedPortIndex = -1;
 boolean isConnected = false;
 String connectionStatus = "OFFLINE";
 
-/* 부저 버튼 관련 변수 */
+/* 遺? 踰꾪듉 愿??蹂??*/
 boolean buzzerActive = false;
 int lastBuzzerSendTime = 0;
 int lastAutoAlarmSendTime = 0;
 
-/* 터미널 관련 변수 - 쓰레드 안전을 위해 동기화된 리스트로 선언 */
+/* ?곕???愿??蹂??- ?곕젅???덉쟾???꾪빐 ?숆린?붾맂 由ъ뒪?몃줈 ?좎뼵 */
 List<String> terminalLines = Collections.synchronizedList(new ArrayList<String>());
 List<String> fullLogLines = Collections.synchronizedList(new ArrayList<String>());
 int maxTerminalLines = 6;
@@ -144,6 +142,7 @@ class VehicleState {
   boolean hasEnteredCenter = false;
   boolean hasDrawPos = false;
   int displayOrder = 0;
+  int riskLevel = RISK_NONE;
   String pendingRoad = "";
   int pendingRoadCount = 0;
 
@@ -458,6 +457,17 @@ class VehicleState {
     if (roadName.equals("A1-A2 ROAD")) return 2;
     return -1;
   }
+
+  float distanceFromCenterM() {
+    return dist(pos.x, pos.y, A0_X, A0_Y) / MAP_SCALE;
+  }
+
+  float ttcSpeedMps() {
+    if (hasFreshTagSpeed()) {
+      return tagSpeed / 3.6;
+    }
+    return speed / 3.6;
+  }
 }
 
 PVector estimateAnchorBoxPosition(float[] ds, boolean hasD0, boolean hasD1, boolean hasD2, boolean hasD3) {
@@ -613,6 +623,7 @@ PVector projectSingleAnchorRoad(int anchorId, float distanceM, String road) {
 
 HashMap<String, VehicleState> vehicleMap = new HashMap<String, VehicleState>();
 HashMap<String, TagDiscoveryState> tagDiscoveryMap = new HashMap<String, TagDiscoveryState>();
+HashMap<String, Integer> lastSentRiskLevelMap = new HashMap<String, Integer>();
 
 class TagDiscoveryState {
   String tagId;
@@ -667,7 +678,7 @@ void draw() {
     else {
       v.updateDrawPosition();
       v.displayOrder = idx;
-      color vColor = (v.hasEnteredCenter) ? color(0, 255, 180) : (v.speed >= SPEED_LIMIT ? color(255, 45, 85) : color(0, 240, 255));
+      color vColor = vehicleRiskColor(v);
       drawVehicle(v.drawPos.x, v.drawPos.y, v.speed, v.id, vColor, v);
 
       if (!v.hasEnteredCenter && v.speed >= SPEED_LIMIT) anyVehicleSpeeding = true;
@@ -684,17 +695,6 @@ void draw() {
 
   drawTagListPanel();
   drawTerminal();
-
-  if (isConnected) {
-    // anyVehicleSpeeding: draw() 루프 상단에서 과속 차량이 한 대라도 있으면 true가 됨
-    // buzzerActive: 사용자가 버튼을 누르고 있는 경우
-    if (anyVehicleSpeeding || buzzerActive) {
-      if (millis() - lastAutoAlarmSendTime >= 100) {
-        myPort.write('1');
-        lastAutoAlarmSendTime = millis();
-      }
-    }
-  }
 
   if (isConnected && buzzerActive) {
     if (millis() - lastBuzzerSendTime >= 100) {
@@ -898,7 +898,7 @@ void mousePressed() {
     }
   }
 
-  // [수정] 누르고 있는 동안만 활성화
+  // [?섏젙] ?꾨Ⅴ怨??덈뒗 ?숈븞留??쒖꽦??
   if (mouseX >= 15 && mouseX <= 185 && mouseY >= height - 185 && mouseY <= height - 140) {
     if (isConnected) {
       buzzerActive = true;
@@ -910,7 +910,7 @@ void mousePressed() {
   }
 }
 
-// [추가] 마우스를 떼면 부저 비활성화
+// [異붽?] 留덉슦?ㅻ? ?쇰㈃ 遺? 鍮꾪솢?깊솕
 void mouseReleased() {
   buzzerActive = false;
 }
@@ -991,6 +991,7 @@ void handleSerialLine(String inString) {
         } else {
           vehicleMap.get(id).updateTagSpeed(float(parts[1]), true);
         }
+        updateTtcRiskAndNotify();
       }
     }
     return;
@@ -1012,8 +1013,133 @@ void handleSerialLine(String inString) {
         float(distStrs[2]) / 1000.0,
         float(distStrs[3]) / 1000.0
         );
+      updateTtcRiskAndNotify();
     }
   }
+}
+
+int calculateTtcRisk(float tag1SpeedMps, float tag1DistanceFromCenter,
+                     float tag2SpeedMps, float tag2DistanceFromCenter) {
+  if (tag1DistanceFromCenter < 0 || tag2DistanceFromCenter < 0) {
+    return RISK_NONE;
+  }
+
+  if (tag1SpeedMps <= 0 || tag2SpeedMps <= 0) {
+    return RISK_NONE;
+  }
+
+  float tag1TimeToCenter = tag1DistanceFromCenter / tag1SpeedMps;
+  float tag2TimeToCenter = tag2DistanceFromCenter / tag2SpeedMps;
+  float timeDiff = abs(tag1TimeToCenter - tag2TimeToCenter);
+
+  if (timeDiff > COLLISION_TIME_WINDOW_SEC) {
+    return RISK_NONE;
+  }
+
+  float maxSpeed = max(tag1SpeedMps, tag2SpeedMps);
+  if (maxSpeed >= FAST_SPEED_THRESHOLD_MPS) {
+    return RISK_COLLISION_FAST;
+  }
+
+  return RISK_COLLISION_SLOW;
+}
+
+void updateTtcRiskAndNotify() {
+  HashMap<String, Integer> nextRiskMap = new HashMap<String, Integer>();
+  ArrayList<VehicleState> vehicles = new ArrayList<VehicleState>();
+
+  for (VehicleState v : vehicleMap.values()) {
+    if (v.hasPos && millis() - v.lastTime <= VEHICLE_HOLD_MS) {
+      vehicles.add(v);
+      nextRiskMap.put(v.id, RISK_NONE);
+    }
+  }
+
+  for (int i = 0; i < vehicles.size(); i++) {
+    VehicleState a = vehicles.get(i);
+    for (int j = i + 1; j < vehicles.size(); j++) {
+      VehicleState b = vehicles.get(j);
+      int pairRisk = calculateTtcRisk(
+        a.ttcSpeedMps(), a.distanceFromCenterM(),
+        b.ttcSpeedMps(), b.distanceFromCenterM()
+        );
+
+      if (pairRisk > nextRiskMap.get(a.id)) {
+        nextRiskMap.put(a.id, pairRisk);
+      }
+      if (pairRisk > nextRiskMap.get(b.id)) {
+        nextRiskMap.put(b.id, pairRisk);
+      }
+    }
+  }
+
+  for (String id : nextRiskMap.keySet()) {
+    int nextRisk = nextRiskMap.get(id);
+    if (vehicleMap.containsKey(id)) {
+      vehicleMap.get(id).riskLevel = nextRisk;
+    }
+    int prevRisk = lastSentRiskLevelMap.containsKey(id) ? lastSentRiskLevelMap.get(id) : -1;
+    if (nextRisk != prevRisk) {
+      sendRiskLevelToAnchor(id, nextRisk);
+      lastSentRiskLevelMap.put(id, nextRisk);
+    }
+  }
+
+  ArrayList<String> staleRiskIds = new ArrayList<String>();
+  for (String id : lastSentRiskLevelMap.keySet()) {
+    if (!nextRiskMap.containsKey(id)) {
+      staleRiskIds.add(id);
+    }
+  }
+  for (String id : staleRiskIds) {
+    if (vehicleMap.containsKey(id)) {
+      vehicleMap.get(id).riskLevel = RISK_NONE;
+    }
+    sendRiskLevelToAnchor(id, RISK_NONE);
+    lastSentRiskLevelMap.remove(id);
+  }
+}
+
+void sendRiskLevelToAnchor(String vehicleId, int riskLevel) {
+  if (!isConnected || myPort == null || vehicleId == null || !vehicleId.startsWith("T")) {
+    return;
+  }
+
+  String tagId = vehicleId.substring(1);
+  int safeRiskLevel = riskLevel;
+  if (safeRiskLevel < RISK_NONE) {
+    safeRiskLevel = RISK_NONE;
+  }
+  if (safeRiskLevel > RISK_COLLISION_FAST) {
+    safeRiskLevel = RISK_COLLISION_FAST;
+  }
+  myPort.write("R," + tagId + "," + safeRiskLevel + "\n");
+}
+
+int vehicleRiskColor(VehicleState v) {
+  if (v.riskLevel == RISK_COLLISION_FAST) {
+    return color(255, 45, 85);
+  }
+  if (v.riskLevel == RISK_COLLISION_SLOW) {
+    return color(255, 180, 0);
+  }
+  if (v.hasEnteredCenter) {
+    return color(0, 255, 180);
+  }
+  if (v.speed >= SPEED_LIMIT) {
+    return color(255, 45, 85);
+  }
+  return color(0, 240, 255);
+}
+
+String riskLabel(int riskLevel) {
+  if (riskLevel == RISK_COLLISION_FAST) {
+    return "COLLISION_FAST";
+  }
+  if (riskLevel == RISK_COLLISION_SLOW) {
+    return "COLLISION_SLOW";
+  }
+  return "NO_COLLISION";
 }
 
 void updateTagListFromLine(String inString)
@@ -1118,6 +1244,8 @@ void drawGlobalStatus() {
     if (v.hasFreshTagSpeed()) fill(0, 240, 255);
     else fill(150);
     text("TAG SPEED: " + formatTagSpeed(v), baseX + 20, yOff + 83);
+    fill(vehicleRiskColor(v));
+    text("RISK: " + riskLabel(v.riskLevel), baseX + 20, yOff + 101);
 
     i++;
   }
@@ -1146,6 +1274,8 @@ void drawVehicle(float x, float y, float spd, String id, color c, VehicleState v
   text("CALC " + nf(spd, 0, 1) + " km/h", x, y - 38);
   fill(v.hasFreshTagSpeed() ? color(0, 240, 255) : color(180));
   text("TAG " + formatTagSpeed(v), x, y - 22);
+  fill(vehicleRiskColor(v));
+  text(riskLabel(v.riskLevel), x, y - 6);
 
   textSize(10);
   textAlign(LEFT, TOP);
@@ -1319,3 +1449,5 @@ void drawAnchor(int id, float x, float y) {
 //    text(i, anchors[i][0], anchors[i][1]);
 //  }
 //}
+
+

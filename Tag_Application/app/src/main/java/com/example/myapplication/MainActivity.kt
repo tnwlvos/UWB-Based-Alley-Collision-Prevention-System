@@ -18,11 +18,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -37,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,6 +67,8 @@ private const val SPEED_RESEND_INTERVAL_MS = 100L
 class MainActivity : ComponentActivity() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var usbSerialPort: UsbSerialPort? = null
+    @Volatile private var usbReadRunning = false
+    private var usbReadThread: Thread? = null
     private val ACTION_USB_PERMISSION = "com.example.myapplication.USB_PERMISSION"
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -73,6 +82,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onDestroy() {
+        stopUsbReadLoop()
+        try {
+            usbSerialPort?.takeIf { it.isOpen }?.close()
+        } catch (_: IOException) {
+        }
+        super.onDestroy()
+    }
+
     private fun sendDataToUsb(data: String) {
         val port = usbSerialPort
         if (port != null && port.isOpen) {
@@ -84,7 +102,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun connectUsb(onStatusUpdate: (String) -> Unit) {
+    private fun connectUsb(onStatusUpdate: (String) -> Unit, onRiskUpdate: (Int) -> Unit) {
         val manager = getSystemService(USB_SERVICE) as UsbManager
         val availableDrivers = UsbSerialProber.getDefaultProber().findAllDrivers(manager)
         if (availableDrivers.isEmpty()) {
@@ -111,7 +129,7 @@ class MainActivity : ComponentActivity() {
                         if (ACTION_USB_PERMISSION == intent.action) {
                             synchronized(this) {
                                 if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                                    openPort(manager, driver, onStatusUpdate)
+                                    openPort(manager, driver, onStatusUpdate, onRiskUpdate)
                                 } else {
                                     onStatusUpdate("USB Permission Denied")
                                 }
@@ -134,11 +152,16 @@ class MainActivity : ComponentActivity() {
                 onStatusUpdate("USB permission error: ${e.message}")
             }
         } else {
-            openPort(manager, driver, onStatusUpdate)
+            openPort(manager, driver, onStatusUpdate, onRiskUpdate)
         }
     }
 
-    private fun openPort(manager: UsbManager, driver: UsbSerialDriver, onStatusUpdate: (String) -> Unit) {
+    private fun openPort(
+        manager: UsbManager,
+        driver: UsbSerialDriver,
+        onStatusUpdate: (String) -> Unit,
+        onRiskUpdate: (Int) -> Unit
+    ) {
         val port = driver.ports.firstOrNull()
         if (port == null) {
             onStatusUpdate("USB serial port not found")
@@ -158,10 +181,12 @@ class MainActivity : ComponentActivity() {
         }
 
         try {
+            stopUsbReadLoop()
             usbSerialPort?.takeIf { it.isOpen }?.close()
             port.open(connection)
             port.setParameters(115200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
             this.usbSerialPort = port
+            startUsbReadLoop(port, onRiskUpdate, onStatusUpdate)
             onStatusUpdate("USB Connected: ${driver.device.deviceName}")
         } catch (e: IOException) {
             try {
@@ -179,19 +204,72 @@ class MainActivity : ComponentActivity() {
             onStatusUpdate("USB error: ${e.message}")
         }
     }
+
+    private fun startUsbReadLoop(
+        port: UsbSerialPort,
+        onRiskUpdate: (Int) -> Unit,
+        onStatusUpdate: (String) -> Unit
+    ) {
+        usbReadRunning = true
+        usbReadThread = Thread {
+            val buffer = ByteArray(64)
+            val lineBuffer = StringBuilder()
+
+            while (usbReadRunning && port.isOpen) {
+                try {
+                    val count = port.read(buffer, 200)
+                    for (i in 0 until count) {
+                        val ch = buffer[i].toInt().toChar()
+                        if (ch == '\n') {
+                            handleUsbLine(lineBuffer.toString().trim(), onRiskUpdate)
+                            lineBuffer.clear()
+                        } else if (ch != '\r' && lineBuffer.length < 64) {
+                            lineBuffer.append(ch)
+                        }
+                    }
+                } catch (e: IOException) {
+                    if (usbReadRunning) {
+                        runOnUiThread { onStatusUpdate("USB read error: ${e.message}") }
+                    }
+                    break
+                }
+            }
+        }.also { thread ->
+            thread.isDaemon = true
+            thread.start()
+        }
+    }
+
+    private fun handleUsbLine(line: String, onRiskUpdate: (Int) -> Unit) {
+        if (!line.startsWith("RISK,")) {
+            return
+        }
+
+        val riskLevel = line.substringAfter(',').toIntOrNull()?.coerceIn(0, 2) ?: return
+        runOnUiThread {
+            onRiskUpdate(riskLevel)
+        }
+    }
+
+    private fun stopUsbReadLoop() {
+        usbReadRunning = false
+        usbReadThread?.interrupt()
+        usbReadThread = null
+    }
 }
 
 @Composable
 fun MainScreen(
     fusedLocationClient: FusedLocationProviderClient,
     onSpeedUpdate: (String) -> Unit,
-    onConnectUsb: ((String) -> Unit) -> Unit
+    onConnectUsb: ((String) -> Unit, (Int) -> Unit) -> Unit
 ) {
     val context = LocalContext.current
     var isGpsEnabled by remember { mutableStateOf(false) }
     var currentSpeed by remember { mutableFloatStateOf(0f) }
     var lastSpeedUpdateMillis by remember { mutableStateOf(0L) }
     var usbStatus by remember { mutableStateOf("USB Not Connected") }
+    var riskLevel by remember { mutableStateOf(0) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -262,6 +340,11 @@ fun MainScreen(
         ) {
             Text(text = "Current Speed", fontSize = 20.sp)
             Text(text = "%.2f km/h".format(currentSpeed), fontSize = 48.sp, color = MaterialTheme.colorScheme.primary)
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            TrafficRiskLights(riskLevel)
+            Text(text = riskStatusText(riskLevel), fontSize = 20.sp, color = riskStatusColor(riskLevel))
             
             Spacer(modifier = Modifier.height(32.dp))
             
@@ -283,12 +366,54 @@ fun MainScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             Button(onClick = {
-                onConnectUsb { status -> usbStatus = status }
+                onConnectUsb(
+                    { status -> usbStatus = status },
+                    { nextRiskLevel -> riskLevel = nextRiskLevel }
+                )
             }) {
                 Text("Connect USB (DWM1000)")
             }
 
             Text(text = usbStatus, modifier = Modifier.padding(8.dp), fontSize = 12.sp)
         }
+    }
+}
+
+@Composable
+fun TrafficRiskLights(riskLevel: Int) {
+    Row(
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RiskLight(color = Color(0xFF24D366), isOn = riskLevel == 0)
+        Spacer(modifier = Modifier.width(16.dp))
+        RiskLight(color = Color(0xFFFFC107), isOn = riskLevel == 1)
+        Spacer(modifier = Modifier.width(16.dp))
+        RiskLight(color = Color(0xFFFF1744), isOn = riskLevel == 2)
+    }
+}
+
+@Composable
+fun RiskLight(color: Color, isOn: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(56.dp)
+            .background(if (isOn) color else Color(0xFF303030), CircleShape)
+    )
+}
+
+fun riskStatusText(riskLevel: Int): String {
+    return when (riskLevel) {
+        1 -> "CAUTION"
+        2 -> "DANGER"
+        else -> "SAFE"
+    }
+}
+
+fun riskStatusColor(riskLevel: Int): Color {
+    return when (riskLevel) {
+        1 -> Color(0xFFFFC107)
+        2 -> Color(0xFFFF1744)
+        else -> Color(0xFF24D366)
     }
 }
