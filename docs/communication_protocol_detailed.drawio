@@ -1,0 +1,242 @@
+<mxfile host="app.diagrams.net" modified="2026-06-19T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="communication-protocol-detailed" name="Detailed Communication Protocol">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1600" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="UWB 기반 충돌 위험 경보 시스템 상세 통신 순서도" style="text;html=1;strokeColor=none;fillColor=none;fontSize=28;fontStyle=1;fontFamily=Malgun Gothic;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="420" y="20" width="1360" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="PC Processing - Anchor0 - Slave Anchors - Tag - Android App 간 메시지 흐름" style="text;html=1;strokeColor=none;fillColor=none;fontSize=15;fontFamily=Malgun Gothic;align=center;verticalAlign=middle;fontColor=#4A5568;" vertex="1" parent="1">
+          <mxGeometry x="420" y="65" width="1360" height="32" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lane_pc" value="PC Processing" style="swimlane;html=1;startSize=36;horizontal=0;fillColor=#fff5f5;strokeColor=#e53e3e;fontSize=18;fontStyle=1;fontFamily=Malgun Gothic;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="310" height="1180" as="geometry"/>
+        </mxCell>
+        <mxCell id="lane_a0" value="마스터 앵커 A0" style="swimlane;html=1;startSize=36;horizontal=0;fillColor=#ebf8ff;strokeColor=#3182ce;fontSize=18;fontStyle=1;fontFamily=Malgun Gothic;" vertex="1" parent="1">
+          <mxGeometry x="380" y="120" width="410" height="1180" as="geometry"/>
+        </mxCell>
+        <mxCell id="lane_slave" value="슬레이브 앵커 A1 / A2 / A3" style="swimlane;html=1;startSize=36;horizontal=0;fillColor=#faf5ff;strokeColor=#805ad5;fontSize=18;fontStyle=1;fontFamily=Malgun Gothic;" vertex="1" parent="1">
+          <mxGeometry x="820" y="120" width="430" height="1180" as="geometry"/>
+        </mxCell>
+        <mxCell id="lane_tag" value="태그 Tag" style="swimlane;html=1;startSize=36;horizontal=0;fillColor=#f0fff4;strokeColor=#38a169;fontSize=18;fontStyle=1;fontFamily=Malgun Gothic;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="120" width="390" height="1180" as="geometry"/>
+        </mxCell>
+        <mxCell id="lane_app" value="Android App" style="swimlane;html=1;startSize=36;horizontal=0;fillColor=#fffaf0;strokeColor=#dd6b20;fontSize=18;fontStyle=1;fontFamily=Malgun Gothic;" vertex="1" parent="1">
+          <mxGeometry x="1700" y="120" width="430" height="1180" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="pc_start" value="시리얼 포트 연결&lt;br&gt;Anchor0 UART 수신 대기" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fed7d7;strokeColor=#e53e3e;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="85" y="170" width="220" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="pc_calc" value="거리/속도 데이터 수신&lt;br&gt;T&lt;tagId&gt;:d0,d1,d2,d3&lt;br&gt;S&lt;tagId&gt;:speed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fed7d7;strokeColor=#e53e3e;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="85" y="870" width="220" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="pc_ttc" value="위치 추정 + TTC 계산&lt;br&gt;timeDiff &lt;= 2.5s&lt;br&gt;fast 기준 4.0 m/s" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fed7d7;strokeColor=#e53e3e;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="85" y="990" width="220" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="pc_risk" value="위험 단계 UART 전송&lt;br&gt;R,&lt;tagId&gt;,&lt;riskLevel&gt;&lt;br&gt;0 SAFE / 1 CAUTION / 2 DANGER" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fed7d7;strokeColor=#e53e3e;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="85" y="1110" width="220" height="95" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="a0_init" value="시스템 시작&lt;br&gt;Active Tag List 초기화&lt;br&gt;tag_risk_level 초기화" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bee3f8;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="475" y="170" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="a0_sched" value="탐색 주기 확인&lt;br&gt;태그 없음: 300ms&lt;br&gt;태그 있음: 1500ms" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bee3f8;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="475" y="285" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="a0_tag_req" value="TAG_REQUEST 송신&lt;br&gt;data[0]=7&lt;br&gt;data[16]=0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bee3f8;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="475" y="400" width="220" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="a0_collect" value="TAG_RESPONSE 수신&lt;br&gt;A0 직접 수신 태그 등록&lt;br&gt;Active Tag List 갱신" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bee3f8;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="475" y="515" width="220" height="85" as="geometry"/>
+        </mxCell>
+        <mxCell id="a0_need_a2" value="A2 보조 탐색 조건&lt;br&gt;1) A0가 태그 미발견&lt;br&gt;2) Active Tag 1개 상태 3회 반복" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="485" y="635" width="200" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="a0_a2_go" value="A2_DISCOVERY_GO 송신&lt;br&gt;data[0]=12&lt;br&gt;data[16]=2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bee3f8;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="475" y="790" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="a0_choose_tag" value="라운드로빈 측정 대상 선택&lt;br&gt;active_tag_list[id_index]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bee3f8;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="475" y="920" width="220" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="a0_beacon_decision" value="태그 담당 앵커 판단&lt;br&gt;A2가 들은 태그인가?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="485" y="1025" width="200" height="105" as="geometry"/>
+        </mxCell>
+        <mxCell id="a0_beacon" value="BEACON 송신&lt;br&gt;data[0]=4&lt;br&gt;data[1]=tagId&lt;br&gt;data[2]=riskLevel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bee3f8;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="420" y="1170" width="170" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="a0_delegate" value="BEACON_DELEGATE 송신&lt;br&gt;data[0]=10&lt;br&gt;data[16]=2&lt;br&gt;data[17]=tagId" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bee3f8;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="610" y="1170" width="170" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="a0_final" value="FINAL_REPORT / DELEGATED_FINAL_REPORT 수신&lt;br&gt;거리 배열 저장 후 PC 출력" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bee3f8;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="475" y="1340" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="a0_risk_save" value="R 명령 수신&lt;br&gt;tag_risk_level[tagId] 저장&lt;br&gt;변경 시 pending_risk_notify=true" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#bee3f8;strokeColor=#3182ce;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="475" y="1450" width="220" height="90" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sl_passive" value="A0 탐색 응답 감청&lt;br&gt;TAG_RESPONSE(data[16]=0)&lt;br&gt;passive tag 후보 저장" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e9d8fd;strokeColor=#805ad5;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="925" y="515" width="220" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="sl_a2_start" value="A2_DISCOVERY_GO 수신&lt;br&gt;A2만 해당&lt;br&gt;data[16] == MY_ID" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e9d8fd;strokeColor=#805ad5;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="925" y="790" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="sl_tag_req" value="A2가 TAG_REQUEST 송신&lt;br&gt;data[0]=7&lt;br&gt;data[16]=2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e9d8fd;strokeColor=#805ad5;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="925" y="900" width="220" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="sl_report" value="A2_DISCOVERY_REPORT / EMPTY&lt;br&gt;발견 태그 목록을 A0에 보고" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e9d8fd;strokeColor=#805ad5;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="925" y="1010" width="220" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="sl_beacon" value="위임 측정 수행&lt;br&gt;BEACON_DELEGATE 수신 후&lt;br&gt;해당 태그에 BEACON 송신" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e9d8fd;strokeColor=#805ad5;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="925" y="1170" width="220" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="sl_ranging" value="거리 측정 응답&lt;br&gt;POLL_ACK / RANGE_REPORT&lt;br&gt;DS-TWR 수행" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e9d8fd;strokeColor=#805ad5;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="925" y="1340" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="sl_delegated_report" value="DELEGATED_FINAL_REPORT&lt;br&gt;A2가 A0로 최종 결과 릴레이" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e9d8fd;strokeColor=#805ad5;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="925" y="1450" width="220" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="tag_idle" value="IDLE / 수신 대기&lt;br&gt;TAG_REQUEST, BEACON, WARNING 대기" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c6f6d5;strokeColor=#38a169;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1365" y="285" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="tag_response" value="TAG_RESPONSE 송신&lt;br&gt;data[0]=8&lt;br&gt;data[16]=요청 앵커 ID&lt;br&gt;data[17]=MY_TAG_ID" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c6f6d5;strokeColor=#38a169;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1365" y="435" width="220" height="95" as="geometry"/>
+        </mxCell>
+        <mxCell id="tag_beacon" value="BEACON 수신&lt;br&gt;대상 Tag ID 확인&lt;br&gt;riskLevel 적용" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c6f6d5;strokeColor=#38a169;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1365" y="1170" width="220" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="tag_ranging" value="앵커별 거리 측정&lt;br&gt;POLL → POLL_ACK → RANGE → RANGE_REPORT&lt;br&gt;distance_storage[0~3] 저장" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c6f6d5;strokeColor=#38a169;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1365" y="1340" width="220" height="95" as="geometry"/>
+        </mxCell>
+        <mxCell id="tag_final" value="FINAL_REPORT 송신&lt;br&gt;d0~d3 + speed + speedValid 포함" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c6f6d5;strokeColor=#38a169;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1365" y="1465" width="220" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="tag_warning" value="WARNING 수신&lt;br&gt;data[2]=riskLevel&lt;br&gt;GPIO 26 경고 점멸&lt;br&gt;앱으로 RISK 전송" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c6f6d5;strokeColor=#38a169;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1365" y="1030" width="220" height="95" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="app_speed" value="GPS 속도 측정&lt;br&gt;약 100ms 주기" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#feebc8;strokeColor=#dd6b20;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1805" y="285" width="220" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="app_send_speed" value="USB Serial 송신&lt;br&gt;&amp;lt;speed_km_h&amp;gt;\\n&lt;br&gt;예: 12.34\\n" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#feebc8;strokeColor=#dd6b20;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1805" y="390" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="app_risk" value="태그에서 RISK 수신&lt;br&gt;RISK,0 / RISK,1 / RISK,2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#feebc8;strokeColor=#dd6b20;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1805" y="1030" width="220" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="app_ui" value="신호등 UI 표시&lt;br&gt;초록 SAFE&lt;br&gt;노랑 CAUTION&lt;br&gt;빨강 DANGER" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#feebc8;strokeColor=#dd6b20;fontFamily=Malgun Gothic;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1805" y="1145" width="220" height="90" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend" value="실선: UWB 메시지 / 주황 점선: UART 또는 USB Serial / 빨간 텍스트: 주요 메시지명" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#edf2f7;strokeColor=#a0aec0;fontFamily=Malgun Gothic;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="725" y="90" width="750" height="36" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_init_sched" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="a0_init" target="a0_sched">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_sched_req" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="a0_sched" target="a0_tag_req">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_req_tag" value="TAG_REQUEST" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=13;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="a0_tag_req" target="tag_idle">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_tag_resp_a0" value="TAG_RESPONSE" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=13;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="tag_response" target="a0_collect">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_tag_resp_slave" value="passive 수집" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#718096;strokeWidth=2;dashed=1;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;" edge="1" parent="1" source="tag_response" target="sl_passive">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_collect_need" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="a0_collect" target="a0_need_a2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_need_a2_go" value="조건 만족" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;" edge="1" parent="1" source="a0_need_a2" target="a0_a2_go">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_a2_go" value="A2_DISCOVERY_GO" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=13;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="a0_a2_go" target="sl_a2_start">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_a2_start_req" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="sl_a2_start" target="sl_tag_req">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_a2_req_tag" value="TAG_REQUEST" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=13;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="sl_tag_req" target="tag_idle">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_a2_report" value="A2_DISCOVERY_REPORT / EMPTY" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="sl_report" target="a0_choose_tag">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_choose_decision" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="a0_choose_tag" target="a0_beacon_decision">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_direct_beacon" value="직접 측정" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;" edge="1" parent="1" source="a0_beacon_decision" target="a0_beacon">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_delegate" value="A2 위임" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;" edge="1" parent="1" source="a0_beacon_decision" target="a0_delegate">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_beacon_tag" value="BEACON" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=13;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="a0_beacon" target="tag_beacon">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_delegate_slave" value="BEACON_DELEGATE" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=13;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="a0_delegate" target="sl_beacon">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_slave_beacon_tag" value="BEACON" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=13;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="sl_beacon" target="tag_beacon">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_tag_ranging" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="tag_beacon" target="tag_ranging">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_ranging_slave" value="POLL / RANGE" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=13;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="tag_ranging" target="sl_ranging">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_ranging_resp" value="POLL_ACK / RANGE_REPORT" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="sl_ranging" target="tag_ranging">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_tag_final" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="tag_ranging" target="tag_final">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_final_a0" value="FINAL_REPORT" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=13;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="tag_final" target="a0_final">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_delegated_final" value="DELEGATED_FINAL_REPORT" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="sl_delegated_report" target="a0_final">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_a0_pc" value="UART 거리/속도 출력" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#dd6b20;strokeWidth=2;dashed=1;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;fontStyle=1;" edge="1" parent="1" source="a0_final" target="pc_calc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_pc_calc_ttc" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="pc_calc" target="pc_ttc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_pc_ttc_risk" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="pc_ttc" target="pc_risk">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_pc_risk_a0" value="UART: R,tagId,risk" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#dd6b20;strokeWidth=2;dashed=1;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;fontStyle=1;" edge="1" parent="1" source="pc_risk" target="a0_risk_save">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_risk_warning" value="WARNING 또는 다음 BEACON에 risk 포함" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;fontStyle=1;fontColor=#c53030;" edge="1" parent="1" source="a0_risk_save" target="tag_warning">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_app_speed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="app_speed" target="app_send_speed">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_app_tag_speed" value="USB: speed\\n" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#dd6b20;strokeWidth=2;dashed=1;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;fontStyle=1;" edge="1" parent="1" source="app_send_speed" target="tag_ranging">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_tag_app_risk" value="USB: RISK,level" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#dd6b20;strokeWidth=2;dashed=1;endArrow=block;fontFamily=Malgun Gothic;fontSize=12;fontStyle=1;" edge="1" parent="1" source="tag_warning" target="app_risk">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_app_ui" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2d3748;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="app_risk" target="app_ui">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="msg_table" value="메시지 ID 요약&lt;br&gt;0 POLL / 1 POLL_ACK / 2 RANGE / 3 RANGE_REPORT&lt;br&gt;4 BEACON / 5 FINAL_REPORT / 6 WARNING&lt;br&gt;7 TAG_REQUEST / 8 TAG_RESPONSE / 9 ANCHOR_TAG_REPORT&lt;br&gt;10 BEACON_DELEGATE / 11 DELEGATED_FINAL_REPORT&lt;br&gt;12 A2_DISCOVERY_GO / 13 A2_DISCOVERY_REPORT / 14 A2_DISCOVERY_EMPTY" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#4a5568;fontFamily=Malgun Gothic;fontSize=13;align=left;spacingLeft=12;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="20" width="850" height="105" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

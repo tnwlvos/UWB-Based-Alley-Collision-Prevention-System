@@ -18,8 +18,6 @@ SinOsc sine;
 boolean isSoundPlaying = false;
 int alarmTimer = 0;
 
-float SPEED_LIMIT = 3.0;
-
 final float MAP_SCALE = 14.0;        // pixels per meter for the demo map
 final float A0_A1_WIDTH_M = 6.85;    // A0-A1 road width
 final float A0_A3_WIDTH_M = 7.73;    // A0-A3 road width
@@ -27,10 +25,11 @@ final float A0_A1_ROAD_LEN_M = 15.1; // road length from A0-A1 anchor line
 final float A0_A3_ROAD_LEN_M = 38.0; // road length from A0-A3 anchor line
 final float ROAD_SWITCH_MARGIN_M = 1.0;
 final int VEHICLE_HOLD_MS = 8000;
-final float POSITION_SMOOTHING = 0.18;
-final int POSITION_PREDICT_MAX_MS = 450;
+final int TARGET_FRAME_RATE = 120;
+final float POSITION_SMOOTHING = 0.26;
+final int POSITION_PREDICT_MAX_MS = 650;
 final float POSITION_PREDICT_MIN_SPEED_KMH = 2.0;
-final float POSITION_PREDICT_VELOCITY_BLEND = 0.35;
+final float POSITION_PREDICT_VELOCITY_BLEND = 0.50;
 final float DIST_INVALID_M = 65.535;
 final int DUPLICATE_RANGE_SUPPRESS_MS = 80;
 final float ROAD_SWITCH_CONFIDENCE_M = 1.5;
@@ -644,6 +643,8 @@ class TagDiscoveryState {
 
 void setup() {
   size(1500, 1050);
+  smooth(4);
+  frameRate(TARGET_FRAME_RATE);
   portList = Serial.list();
 
   sine = new SinOsc(this);
@@ -668,7 +669,7 @@ void draw() {
   translate(200, 0);
   drawStaticRoads();
 
-  boolean anyVehicleSpeeding = false;
+  boolean anyVehicleAtRisk = false;
 
   int idx = 0;
   Iterator<Map.Entry<String, VehicleState>> it = vehicleMap.entrySet().iterator();
@@ -681,16 +682,16 @@ void draw() {
       color vColor = vehicleRiskColor(v);
       drawVehicle(v.drawPos.x, v.drawPos.y, v.speed, v.id, vColor, v);
 
-      if (!v.hasEnteredCenter && v.speed >= SPEED_LIMIT) anyVehicleSpeeding = true;
+      if (v.riskLevel != RISK_NONE) anyVehicleAtRisk = true;
       if (!v.hasEnteredCenter && !v.road.equals("None") && !v.road.equals("TRANSITION")) {
-        drawWarning(v.road, v.id, v.speed, v.displayOrder);
+        drawWarning(v.road, v.id, v.riskLevel, v.displayOrder);
       }
       idx++;
     }
   }
 
   if (vehicleMap.size() > 0) drawGlobalStatus();
-  handleBuzzer(anyVehicleSpeeding);
+  handleBuzzer(anyVehicleAtRisk);
   popMatrix();
 
   drawTagListPanel();
@@ -1117,19 +1118,17 @@ void sendRiskLevelToAnchor(String vehicleId, int riskLevel) {
 }
 
 int vehicleRiskColor(VehicleState v) {
-  if (v.riskLevel == RISK_COLLISION_FAST) {
+  return riskColor(v.riskLevel);
+}
+
+int riskColor(int riskLevel) {
+  if (riskLevel == RISK_COLLISION_FAST) {
     return color(255, 45, 85);
   }
-  if (v.riskLevel == RISK_COLLISION_SLOW) {
+  if (riskLevel == RISK_COLLISION_SLOW) {
     return color(255, 180, 0);
   }
-  if (v.hasEnteredCenter) {
-    return color(0, 255, 180);
-  }
-  if (v.speed >= SPEED_LIMIT) {
-    return color(255, 45, 85);
-  }
-  return color(0, 240, 255);
+  return color(0, 255, 180);
 }
 
 String riskLabel(int riskLevel) {
@@ -1203,7 +1202,7 @@ void drawGlobalStatus() {
   float baseX = 10;
   float baseY = 10;
   float panelW = 240;
-  float itemH = 130;
+  float itemH = 148;
 
   fill(15, 18, 25, 200);
   stroke(0, 255, 255, 80);
@@ -1222,7 +1221,7 @@ void drawGlobalStatus() {
 
     fill(255, 20);
     noStroke();
-    rect(baseX + 10, yOff - 20, panelW - 20, 120, 5);
+    rect(baseX + 10, yOff - 20, panelW - 20, 138, 5);
 
     fill(255);
     textSize(14);
@@ -1237,15 +1236,16 @@ void drawGlobalStatus() {
       text("A" + j + ": " + formatDistance(v.rawDists[j]), baseX + 25 + (j % 2) * 90, yOff + 20 + (j / 2) * 18);
     }
 
-    if (!v.hasEnteredCenter && v.speed >= SPEED_LIMIT) fill(255, 45, 85);
-    else fill(0, 255, 180);
+    fill(vehicleRiskColor(v));
     textSize(13);
     text("CALC SPEED: " + nf(v.speed, 0, 1) + " km/h", baseX + 20, yOff + 65);
     if (v.hasFreshTagSpeed()) fill(0, 240, 255);
     else fill(150);
     text("TAG SPEED: " + formatTagSpeed(v), baseX + 20, yOff + 83);
+    fill(255);
+    text("ENTRY DIST: " + formatEntryDistance(v), baseX + 20, yOff + 101);
     fill(vehicleRiskColor(v));
-    text("RISK: " + riskLabel(v.riskLevel), baseX + 20, yOff + 101);
+    text("RISK: " + riskLabel(v.riskLevel), baseX + 20, yOff + 119);
 
     i++;
   }
@@ -1256,6 +1256,16 @@ String formatTagSpeed(VehicleState v) {
     return "-- km/h";
   }
   return nf(v.tagSpeed, 0, 2) + " km/h";
+}
+
+String formatEntryDistance(VehicleState v) {
+  if (!v.hasPos) {
+    return "--";
+  }
+  if (v.hasEnteredCenter) {
+    return "0.00m";
+  }
+  return nf(max(0, v.distanceFromCenterM()), 0, 2) + "m";
 }
 
 void drawVehicle(float x, float y, float spd, String id, color c, VehicleState v) {
@@ -1284,11 +1294,12 @@ void drawVehicle(float x, float y, float spd, String id, color c, VehicleState v
     "A0 " + formatDistance(v.rawDists[0]) + "\n" +
     "A1 " + formatDistance(v.rawDists[1]) + "\n" +
     "A2 " + formatDistance(v.rawDists[2]) + "\n" +
-    "A3 " + formatDistance(v.rawDists[3]);
+    "A3 " + formatDistance(v.rawDists[3]) + "\n" +
+    "ENTRY " + formatEntryDistance(v);
   text(distLabel, x + 18, y + 12);
 }
 
-void drawWarning(String road, String id, float spd, int order)
+void drawWarning(String road, String id, int riskLevel, int order)
 {
   float lx = A0_X - 200;
   float ly = A0_Y;
@@ -1297,7 +1308,8 @@ void drawWarning(String road, String id, float spd, int order)
 
   ly += (order * 65);
 
-  fill(spd >= SPEED_LIMIT ? color(255, 45, 85, 80) : color(0, 255, 180, 80));
+  int c = riskColor(riskLevel);
+  fill(red(c), green(c), blue(c), 80);
   stroke(255, 150);
   rectMode(CENTER);
   rect(lx, ly, 120, 60, 10);
