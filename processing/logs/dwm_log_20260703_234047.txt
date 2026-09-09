@@ -1,0 +1,11 @@
+23:40:58.510 ets Jul 29 2019 12:21:46
+23:40:58.512 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+23:40:58.512 configsip: 0, SPIWP:0xee
+23:40:58.512 clk_
+23:40:58.517 drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+23:40:58.518 mode:DIO, clock div:1
+23:40:58.520 load:0x3fff0030,len:1344
+23:40:58.522 load:0x40078000,len:13964
+23:40:58.526 load:0x40080400,len:3600
+23:40:58.526 entry 0x400805f0
+23:40:58.730 TAG LIST :
