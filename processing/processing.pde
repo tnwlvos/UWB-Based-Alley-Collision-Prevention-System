@@ -60,12 +60,11 @@ int selectedPortIndex = -1;
 boolean isConnected = false;
 String connectionStatus = "OFFLINE";
 
-/* 遺? 踰꾪듉 愿??蹂??*/
 boolean buzzerActive = false;
 int lastBuzzerSendTime = 0;
 int lastAutoAlarmSendTime = 0;
 
-/* ?곕???愿??蹂??- ?곕젅???덉쟾???꾪빐 ?숆린?붾맂 由ъ뒪?몃줈 ?좎뼵 */
+
 List<String> terminalLines = Collections.synchronizedList(new ArrayList<String>());
 List<String> fullLogLines = Collections.synchronizedList(new ArrayList<String>());
 int maxTerminalLines = 6;
@@ -899,7 +898,6 @@ void mousePressed() {
     }
   }
 
-  // [?섏젙] ?꾨Ⅴ怨??덈뒗 ?숈븞留??쒖꽦??
   if (mouseX >= 15 && mouseX <= 185 && mouseY >= height - 185 && mouseY <= height - 140) {
     if (isConnected) {
       buzzerActive = true;
